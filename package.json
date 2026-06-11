@@ -1,0 +1,22 @@
+{
+  "name": "opencode-codex-accounts-tui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenCode TUI sidebar panel for oc-codex-multi-account accounts and limits.",
+  "license": "MIT",
+  "main": "src/index.tsx",
+  "scripts": {
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "1.15.11",
+    "@opentui/keymap": "0.2.16",
+    "@opentui/solid": "0.2.16",
+    "solid-js": "1.9.12"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.30",
+    "typescript": "5.8.3"
+  }
+}
