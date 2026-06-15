@@ -3,15 +3,34 @@
 #
 # Usage:
 #   opencode-a              # attach to running server (starts one if needed)
+#   opencode-a --last       # reopen saved session for the current directory
 #   opencode-a --new        # start a fresh session
 #   opencode-a --kill       # stop the background server
 #   opencode-a --status     # check if server is running
+#   opencode-a --help       # show this help
 
 PORT="${OPENCODE_PORT:-4096}"
 URL="http://localhost:$PORT"
 PID_FILE="/tmp/opencode-server-$PORT.pid"
 
 cmd="${1:-attach}"
+
+print_help() {
+  cat <<'EOF'
+opencode-a — attach/reconnect to persistent opencode server
+
+Usage:
+  opencode-a              Attach to the running server, or start one if needed
+  opencode-a --last       Reopen the saved OpenCode session for this directory
+  opencode-a --new        Start a fresh session on the running server
+  opencode-a --kill       Stop the background server
+  opencode-a --status     Show server status
+  opencode-a --help       Show this help
+
+Notes:
+  --last delegates to opencode-ls, which tracks the last session per directory.
+EOF
+}
 
 case "$cmd" in
   attach|"")
@@ -27,6 +46,9 @@ case "$cmd" in
       echo "Connecting..."
       opencode attach "$URL" -c
     fi
+    ;;
+  --last|-l)
+    opencode-ls
     ;;
   --new|-n)
     opencode attach "$URL" "$@"
@@ -45,6 +67,9 @@ case "$cmd" in
     else
       echo "Server not running."
     fi
+    ;;
+  --help|-h|help)
+    print_help
     ;;
   *)
     opencode attach "$URL" -c "$@"
