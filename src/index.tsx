@@ -43,12 +43,19 @@ function normalizeProvider(providerID: string | undefined, modelID: string | und
   return undefined;
 }
 
-function currentSessionProvider(api: TuiPluginApi): ActiveProvider | undefined {
+function currentSessionID(api: TuiPluginApi): string | undefined {
   const current = api.route.current;
   if (current.name !== "session") return undefined;
 
   const sessionID = current.params?.sessionID;
   if (typeof sessionID !== "string") return undefined;
+
+  return sessionID;
+}
+
+function currentSessionProvider(api: TuiPluginApi): ActiveProvider | undefined {
+  const sessionID = currentSessionID(api);
+  if (!sessionID) return undefined;
 
   const messages = api.state.session.messages(sessionID);
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -246,13 +253,13 @@ function buildMiniMaxLines(state: MiniMaxProviderState, active: boolean): PanelL
   return lines;
 }
 
-function buildPanelState(api: TuiPluginApi): PanelState {
+function buildPanelState(api: TuiPluginApi, activeProviderOverride?: ActiveProvider): PanelState {
   const snapshot = loadState();
   if (!snapshot) {
     return { status: "empty", lines: [{ text: "Providers panel: waiting for monitor", color: COLOR_MUTED }] };
   }
 
-  const activeProvider = currentSessionProvider(api);
+  const activeProvider = activeProviderOverride ?? currentSessionProvider(api);
   const isActive = (provider: ActiveProvider) => activeProvider === undefined || activeProvider === provider;
   const lines: PanelLine[] = [];
   lines.push({ text: "● codex · subscription", color: dimIfInactive(isActive("codex"), COLOR_OK) });
@@ -272,9 +279,34 @@ function buildPanelState(api: TuiPluginApi): PanelState {
 }
 
 function ProvidersPanel(props: { api: TuiPluginApi }) {
-  const [panel, setPanel] = createSignal<PanelState>(buildPanelState(props.api));
-  const interval = setInterval(() => setPanel(buildPanelState(props.api)), REFRESH_INTERVAL_MS);
-  onCleanup(() => clearInterval(interval));
+  const [activeProvider, setActiveProvider] = createSignal<ActiveProvider | undefined>(currentSessionProvider(props.api));
+  const [panel, setPanel] = createSignal<PanelState>(buildPanelState(props.api, activeProvider()));
+
+  const refresh = () => {
+    const current = currentSessionProvider(props.api);
+    setActiveProvider(current);
+    setPanel(buildPanelState(props.api, current));
+  };
+
+  const interval = setInterval(refresh, REFRESH_INTERVAL_MS);
+  const offMessageUpdated = props.api.event.on("message.updated", (event) => {
+    const info = event.properties.info;
+    if (info.role !== "assistant") return;
+
+    const sessionID = currentSessionID(props.api);
+    if (sessionID && info.sessionID !== sessionID) return;
+
+    const provider = normalizeProvider(info.providerID, info.modelID);
+    if (!provider) return;
+
+    setActiveProvider(provider);
+    setPanel(buildPanelState(props.api, provider));
+  });
+
+  onCleanup(() => {
+    clearInterval(interval);
+    offMessageUpdated();
+  });
 
   return (
     <Show when={panel().status !== "empty"}>
