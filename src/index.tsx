@@ -2,6 +2,7 @@
 // TUI rendering only. This file formats the providers snapshot written to
 // providers-state.json; it must not probe provider APIs or mutate provider data.
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from "@opencode-ai/plugin/tui";
+import { basename } from "node:path";
 import { Show, createSignal, onCleanup } from "solid-js";
 import {
   PROVIDERS_STATE_PATH,
@@ -23,10 +24,21 @@ const COLOR_OK = process.env.OPENCODE_PROVIDERS_TUI_COLOR_OK || "#22c55e";
 const COLOR_WARN = process.env.OPENCODE_PROVIDERS_TUI_COLOR_WARN || "#f59e0b";
 const COLOR_DANGER = process.env.OPENCODE_PROVIDERS_TUI_COLOR_DANGER || "#ef4444";
 const COLOR_MUTED = process.env.OPENCODE_PROVIDERS_TUI_COLOR_MUTED || "#6b7280";
+const MAX_STATUS_PART_LENGTH = Number(process.env.OPENCODE_REPO_STATUS_MAX_PART_LENGTH || 32);
 
 type PanelLine = { text: string; color?: string };
 type PanelState = { status: "ok" | "empty" | "error"; lines: PanelLine[] };
 type ActiveProvider = "codex" | "deepseek" | "minimax";
+
+function truncateMiddle(value: string, maxLength = MAX_STATUS_PART_LENGTH): string {
+  if (value.length <= maxLength) return value;
+  if (maxLength <= 1) return "…";
+
+  const keep = maxLength - 1;
+  const left = Math.ceil(keep / 2);
+  const right = Math.floor(keep / 2);
+  return `${value.slice(0, left)}…${value.slice(-right)}`;
+}
 
 function dimIfInactive(active: boolean, color: string): string {
   return active ? color : COLOR_MUTED;
@@ -326,12 +338,27 @@ function ProvidersPanel(props: { api: TuiPluginApi }) {
   );
 }
 
+function RepoBranchStatus(props: { api: TuiPluginApi }) {
+  const root = props.api.state.path.worktree || props.api.state.path.directory;
+  const repo = root ? basename(root) : "workspace";
+  const branch = props.api.state.vcs?.branch ?? "no-branch";
+
+  return (
+    <text fg={props.api.theme.current.textMuted} wrapMode="none">
+      {truncateMiddle(repo)} · {truncateMiddle(branch)}
+    </text>
+  );
+}
+
 const tui: TuiPlugin = async (api) => {
   api.slots.register({
     order: SIDEBAR_ORDER,
     slots: {
       sidebar_content() {
         return <ProvidersPanel api={api} />;
+      },
+      session_prompt_right() {
+        return <RepoBranchStatus api={api} />;
       },
     },
   });
