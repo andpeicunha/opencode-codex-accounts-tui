@@ -293,6 +293,7 @@ function buildPanelState(api: TuiPluginApi, activeProviderOverride?: ActiveProvi
 function ProvidersPanel(props: { api: TuiPluginApi }) {
   const [activeProvider, setActiveProvider] = createSignal<ActiveProvider | undefined>(currentSessionProvider(props.api));
   const [panel, setPanel] = createSignal<PanelState>(buildPanelState(props.api, activeProvider()));
+  const subagentRootSessionIDs = new Map<string, string>();
 
   const refresh = () => {
     const current = currentSessionProvider(props.api);
@@ -300,13 +301,33 @@ function ProvidersPanel(props: { api: TuiPluginApi }) {
     setPanel(buildPanelState(props.api, current));
   };
 
+  const belongsToCurrentSession = (sessionID: string): boolean => {
+    const current = currentSessionID(props.api);
+    if (!current) return false;
+    return sessionID === current || subagentRootSessionIDs.get(sessionID) === current;
+  };
+
   const interval = setInterval(refresh, REFRESH_INTERVAL_MS);
+  const offSubagentCreated = (props.api.event.on as unknown as (
+    type: "subagent.session.created",
+    handler: (event: { properties: { sessionID?: unknown; parentSessionID?: unknown } }) => void,
+  ) => () => void)("subagent.session.created", (event) => {
+    const sessionID = event.properties.sessionID;
+    const parentSessionID = event.properties.parentSessionID;
+    if (typeof sessionID !== "string" || typeof parentSessionID !== "string") return;
+    const current = currentSessionID(props.api);
+    if (!current) return;
+
+    const rootSessionID = parentSessionID === current ? current : subagentRootSessionIDs.get(parentSessionID);
+    if (!rootSessionID) return;
+
+    subagentRootSessionIDs.set(sessionID, rootSessionID);
+  });
+
   const offMessageUpdated = props.api.event.on("message.updated", (event) => {
     const info = event.properties.info;
     if (info.role !== "assistant") return;
-
-    const sessionID = currentSessionID(props.api);
-    if (sessionID && info.sessionID !== sessionID) return;
+    if (!belongsToCurrentSession(info.sessionID)) return;
 
     const provider = normalizeProvider(info.providerID, info.modelID);
     if (!provider) return;
@@ -317,6 +338,7 @@ function ProvidersPanel(props: { api: TuiPluginApi }) {
 
   onCleanup(() => {
     clearInterval(interval);
+    offSubagentCreated();
     offMessageUpdated();
   });
 
