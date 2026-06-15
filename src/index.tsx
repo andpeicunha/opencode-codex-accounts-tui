@@ -2,7 +2,9 @@
 // TUI rendering only. This file formats the providers snapshot written to
 // providers-state.json; it must not probe provider APIs or mutate provider data.
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from "@opencode-ai/plugin/tui";
-import { basename } from "node:path";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname } from "node:path";
 import { Show, createSignal, onCleanup } from "solid-js";
 import {
   PROVIDERS_STATE_PATH,
@@ -25,10 +27,24 @@ const COLOR_WARN = process.env.OPENCODE_PROVIDERS_TUI_COLOR_WARN || "#f59e0b";
 const COLOR_DANGER = process.env.OPENCODE_PROVIDERS_TUI_COLOR_DANGER || "#ef4444";
 const COLOR_MUTED = process.env.OPENCODE_PROVIDERS_TUI_COLOR_MUTED || "#6b7280";
 const MAX_STATUS_PART_LENGTH = Number(process.env.OPENCODE_REPO_STATUS_MAX_PART_LENGTH || 32);
+const DEBUG_EVENTS = process.env.OPENCODE_PROVIDERS_TUI_DEBUG === "1";
+const DEBUG_LOG_PATH = process.env.OPENCODE_PROVIDERS_TUI_DEBUG_LOG
+  || `${homedir()}/.local/state/opencode-providers-tui/events.log`;
 
 type PanelLine = { text: string; color?: string };
 type PanelState = { status: "ok" | "empty" | "error"; lines: PanelLine[] };
 type ActiveProvider = "codex" | "deepseek" | "minimax";
+
+function debugLog(event: string, data: Record<string, unknown>): void {
+  if (!DEBUG_EVENTS) return;
+
+  try {
+    mkdirSync(dirname(DEBUG_LOG_PATH), { recursive: true });
+    appendFileSync(DEBUG_LOG_PATH, `${JSON.stringify({ ts: new Date().toISOString(), event, ...data })}\n`);
+  } catch {
+    // Debug logging must never break the TUI.
+  }
+}
 
 function truncateMiddle(value: string, maxLength = MAX_STATUS_PART_LENGTH): string {
   if (value.length <= maxLength) return value;
@@ -297,6 +313,11 @@ function ProvidersPanel(props: { api: TuiPluginApi }) {
 
   const refresh = () => {
     const current = currentSessionProvider(props.api);
+    debugLog("refresh", {
+      route: props.api.route.current.name,
+      sessionID: currentSessionID(props.api),
+      provider: current,
+    });
     setActiveProvider(current);
     setPanel(buildPanelState(props.api, current));
   };
@@ -316,9 +337,11 @@ function ProvidersPanel(props: { api: TuiPluginApi }) {
     const parentSessionID = event.properties.parentSessionID;
     if (typeof sessionID !== "string" || typeof parentSessionID !== "string") return;
     const current = currentSessionID(props.api);
+    debugLog("subagent.session.created", { sessionID, parentSessionID, currentSessionID: current });
     if (!current) return;
 
     const rootSessionID = parentSessionID === current ? current : subagentRootSessionIDs.get(parentSessionID);
+    debugLog("subagent.session.root", { sessionID, parentSessionID, rootSessionID });
     if (!rootSessionID) return;
 
     subagentRootSessionIDs.set(sessionID, rootSessionID);
@@ -327,9 +350,19 @@ function ProvidersPanel(props: { api: TuiPluginApi }) {
   const offMessageUpdated = props.api.event.on("message.updated", (event) => {
     const info = event.properties.info;
     if (info.role !== "assistant") return;
-    if (!belongsToCurrentSession(info.sessionID)) return;
+    const belongs = belongsToCurrentSession(info.sessionID);
+    debugLog("message.updated", {
+      sessionID: info.sessionID,
+      currentSessionID: currentSessionID(props.api),
+      belongs,
+      providerID: info.providerID,
+      modelID: info.modelID,
+      completed: Boolean(info.time.completed),
+    });
+    if (!belongs) return;
 
     const provider = normalizeProvider(info.providerID, info.modelID);
+    debugLog("message.provider", { providerID: info.providerID, modelID: info.modelID, provider });
     if (!provider) return;
 
     setActiveProvider(provider);
