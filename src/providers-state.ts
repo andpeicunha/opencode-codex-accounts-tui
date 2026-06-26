@@ -70,6 +70,7 @@ export type DeepSeekProviderState = {
   grantedBalance?: number;
   isAvailable?: boolean;
   error?: string;
+  transient?: boolean;
 };
 
 export type MiniMaxProviderState = {
@@ -87,6 +88,7 @@ export type MiniMaxProviderState = {
     note?: string;
   };
   error?: string;
+  transient?: boolean;
 };
 
 export type ProvidersState = {

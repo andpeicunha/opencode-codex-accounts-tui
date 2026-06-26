@@ -31,6 +31,11 @@ import {
 const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_REFRESH_MS || DEFAULT_REFRESH_MS);
 const FETCH_TIMEOUT_MS = 8_000;
 
+const FAILURE_THRESHOLD = Number(process.env.OPENCODE_PROVIDERS_ERROR_THRESHOLD || 3);
+const transientFailures = { deepseek: 0, minimax: 0 };
+let lastGoodDeepSeek: DeepSeekProviderState | null = null;
+let lastGoodMiniMax: MiniMaxProviderState | null = null;
+
 const DEEPSEEK_BALANCE_URL = "https://api.deepseek.com/user/balance";
 
 const MINIMAX_ENDPOINTS = [
@@ -178,7 +183,7 @@ async function probeDeepSeek(): Promise<DeepSeekProviderState> {
       isAvailable: body.is_available ?? true,
     };
   } catch (error) {
-    return { type: "pay-per-token", status: "error", error: errorMessage(error) };
+    return { type: "pay-per-token", status: "error", error: errorMessage(error), transient: true };
   }
 }
 
@@ -191,6 +196,22 @@ function parseAmount(value: string | undefined): number | undefined {
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message.slice(0, 80);
   return String(error).slice(0, 80);
+}
+
+function applyTransientSuppression<P extends { status: string; transient?: boolean }>(
+  provider: "deepseek" | "minimax",
+  fresh: P,
+  lastGood: P | null,
+): P {
+  if (fresh.status === "error" && fresh.transient === true) {
+    transientFailures[provider]++;
+    if (transientFailures[provider] < FAILURE_THRESHOLD && lastGood?.status === "ok") {
+      return lastGood;
+    }
+  } else {
+    transientFailures[provider] = 0;
+  }
+  return fresh;
 }
 
 type MiniMaxQuotaResponse = {
@@ -327,6 +348,7 @@ async function probeMiniMax(): Promise<MiniMaxProviderState> {
           keySource: endpoint.id,
           endpoint: endpoint.url,
           error: errorMessage(error),
+          transient: true,
         };
       }
     }
@@ -344,29 +366,36 @@ async function probeMiniMax(): Promise<MiniMaxProviderState> {
 }
 
 async function pollOnce(): Promise<ProvidersState> {
-  const [deepseek, minimax] = await Promise.all([probeDeepSeek(), probeMiniMax()]);
+  const [freshDeepSeek, freshMiniMax] = await Promise.all([probeDeepSeek(), probeMiniMax()]);
   // Manual credits are only used when the API didn't return live quota data.
-  const hasLiveQuota = minimax.status === "ok" && Boolean(minimax.quota);
+  const hasLiveQuota = freshMiniMax.status === "ok" && Boolean(freshMiniMax.quota);
   const manual = hasLiveQuota ? null : loadManualState();
   const manualCredits = manual?.minimax?.credits;
   const manualNote = manual?.minimax?.note;
   const enrichedMiniMax: MiniMaxProviderState =
     manualCredits !== undefined
       ? {
-          ...minimax,
+          ...freshMiniMax,
           manualCredits: {
             balance: manualCredits,
             unit: manual?.minimax?.unit ?? "credits",
             note: manualNote,
           },
         }
-      : minimax;
+      : freshMiniMax;
+
+  const finalDeepSeek = applyTransientSuppression("deepseek", freshDeepSeek, lastGoodDeepSeek);
+  if (finalDeepSeek.status === "ok") lastGoodDeepSeek = finalDeepSeek;
+
+  const finalMiniMax = applyTransientSuppression("minimax", enrichedMiniMax, lastGoodMiniMax);
+  if (finalMiniMax.status === "ok") lastGoodMiniMax = finalMiniMax;
+
   return {
     updatedAt: Date.now(),
     providers: {
       codex: buildCodexState(),
-      deepseek,
-      minimax: enrichedMiniMax,
+      deepseek: finalDeepSeek,
+      minimax: finalMiniMax,
     },
   };
 }
