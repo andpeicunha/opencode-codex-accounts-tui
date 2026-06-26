@@ -171,7 +171,18 @@ export const ClaudeUsagePanel = () => {
 
   const data = state();
 
-  if (data.status === "missing-credentials") return null;
+  if (data.status === "missing-credentials") {
+    return (
+      <box gap={0}>
+        <text>
+          <b>Claude Usage</b>
+        </text>
+        <text wrapMode="none">
+          {" "}○ sem credenciais — rode `claude login` em ~/.claude/.credentials.json
+        </text>
+      </box>
+    );
+  }
 
   const tierLabel =
     data.tier && data.rateLimitTier
