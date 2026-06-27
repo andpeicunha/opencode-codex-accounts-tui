@@ -47,6 +47,17 @@ function formatReset(window?: RateWindow): string {
   return `${Math.ceil(hours / 24)}d`;
 }
 
+// Zero-padded "HH:MM" for short windows (5h). Mirrors panels/minimax.tsx.
+function formatResetHHMM(window?: RateWindow): string {
+  if (!window?.resetAt) return "?";
+  const diff = window.resetAt - Date.now();
+  if (diff <= 0) return "00:00";
+  const totalMinutes = Math.ceil(diff / 60_000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
 function formatExpiry(expiresAt?: number): string {
   if (!expiresAt) return "?";
   const diff = expiresAt - Date.now();
@@ -102,7 +113,7 @@ export const CodexAccountsPanel = () => {
       const fiveHour = account.rateLimits?.fiveHour;
       const weekly = account.rateLimits?.weekly;
       lines.push({
-        text: `  5h ${formatPercent(fiveHour)} (${formatReset(fiveHour)}) · 7d ${formatPercent(weekly)} (${formatReset(weekly)})`,
+        text: `  5h ${formatPercent(fiveHour)} (${formatResetHHMM(fiveHour)}) · 7d ${formatPercent(weekly)} (${formatReset(weekly)})`,
         color: usageColor(fiveHour),
       });
     }
