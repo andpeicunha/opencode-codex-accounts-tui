@@ -10,11 +10,18 @@ const COLOR_WARN = process.env.OPENCODE_PROVIDERS_TUI_COLOR_WARN || "#f59e0b";
 const COLOR_DANGER = process.env.OPENCODE_PROVIDERS_TUI_COLOR_DANGER || "#ef4444";
 const COLOR_MUTED = process.env.OPENCODE_PROVIDERS_TUI_COLOR_MUTED || "#6b7280";
 
-const fmtReset = (ms: number | undefined): string => {
-  if (!ms) return "?";
-  const d = new Date(ms);
-  return `${d.getHours()}h`;
-};
+// Mirrors codex's formatReset: returns time until reset, not the hour-of-day.
+// resetAt is a unix-ms timestamp from providers-state.json.
+function formatReset(resetAt: number | undefined): string {
+  if (!resetAt) return "?";
+  const diff = resetAt - Date.now();
+  if (diff <= 0) return "now";
+  const minutes = Math.ceil(diff / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.ceil(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.ceil(hours / 24)}d`;
+}
 
 const readState = (): any => {
   if (!existsSync(STATE_PATH)) return null;
@@ -42,7 +49,7 @@ export const MinimaxUsagePanel = () => {
     <box>
       <text><b>Minimax</b></text>
       <text fg={color} wrapMode="none">
-        {" "}5h {fhUsed}% ({fmtReset(m.fiveHour.resetAt)}) · 7d {sdUsed}% ({fmtReset(m.weekly.resetAt)})
+        {" "}5h {fhUsed}% ({formatReset(m.fiveHour.resetAt)}) · 7d {sdUsed}% ({formatReset(m.weekly.resetAt)})
       </text>
     </box>
   );
