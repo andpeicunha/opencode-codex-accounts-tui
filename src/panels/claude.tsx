@@ -3,6 +3,9 @@ import { Show, createSignal, onCleanup } from "solid-js";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { usageColor } from "../lib/format.js";
+
+const MS_PER_HOUR = 3_600_000;
 
 // Default Anthropic OAuth usage endpoint. Override via env for testing/staging.
 const USAGE_ENDPOINT =
@@ -58,18 +61,11 @@ const hoursUntil = (isoOrMs: number | string | undefined): string => {
   if (!Number.isFinite(ms)) return "?";
   const diff = ms - Date.now();
   if (diff <= 0) return "now";
-  const hrs = Math.floor(diff / 3_600_000);
-  const mins = Math.floor((diff % 3_600_000) / 60_000);
+  const hrs = Math.floor(diff / MS_PER_HOUR);
+  const mins = Math.floor((diff % MS_PER_HOUR) / 60_000);
   if (hrs > 0) return `${hrs}h`;
   return `${mins}m`;
 };
-
-const usageColor = (pct: number): string => {
-  if (pct >= 80) return "\x1b[31m"; // red
-  if (pct >= 50) return "\x1b[33m"; // yellow
-  return "\x1b[32m"; // green
-};
-const RESET = "\x1b[0m";
 
 async function fetchWithTimeout(url: string, init: RequestInit, ms: number): Promise<Response> {
   const controller = new AbortController();
@@ -167,6 +163,7 @@ export const ClaudeUsagePanel = () => {
 
   void load();
   const interval = setInterval(() => void load(), REFRESH_MS);
+  interval.unref?.();
   onCleanup(() => clearInterval(interval));
 
   const data = state();
@@ -204,13 +201,13 @@ export const ClaudeUsagePanel = () => {
         </text>
       ) : null}
       {fh ? (
-        <text wrapMode="none">
-          {"   "}5h {usageColor(fh.pct)}{fh.pct}%{RESET} · resets {fh.resetsIn}
+        <text fg={usageColor(fh.pct)} wrapMode="none">
+          {"   "}5h {fh.pct}% · resets {fh.resetsIn}
         </text>
       ) : null}
       {sd ? (
-        <text wrapMode="none">
-          {"   "}7d {usageColor(sd.pct)}{sd.pct}%{RESET} · resets {sd.resetsIn}
+        <text fg={usageColor(sd.pct)} wrapMode="none">
+          {"   "}7d {sd.pct}% · resets {sd.resetsIn}
         </text>
       ) : null}
       {data.extraUsage?.enabled ? (

@@ -6,13 +6,9 @@ import {
   type CodexProviderState,
   type RateWindow,
 } from "../providers-state.js";
+import { COLOR_OK, COLOR_WARN, COLOR_DANGER, COLOR_MUTED, formatDurationShort, formatDurationHM, MS_PER_DAY } from "../lib/format.js";
 
 const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 15_000);
-
-const COLOR_OK = process.env.OPENCODE_PROVIDERS_TUI_COLOR_OK || "#22c55e";
-const COLOR_WARN = process.env.OPENCODE_PROVIDERS_TUI_COLOR_WARN || "#f59e0b";
-const COLOR_DANGER = process.env.OPENCODE_PROVIDERS_TUI_COLOR_DANGER || "#ef4444";
-const COLOR_MUTED = process.env.OPENCODE_PROVIDERS_TUI_COLOR_MUTED || "#6b7280";
 
 type PanelLine = { text: string; color?: string };
 
@@ -36,33 +32,11 @@ function formatPercent(window?: RateWindow): string {
   return ratio === null ? "?" : `${Math.round(ratio * 100)}%`;
 }
 
-function formatReset(window?: RateWindow): string {
-  if (!window?.resetAt) return "?";
-  const diff = window.resetAt - Date.now();
-  if (diff <= 0) return "now";
-  const minutes = Math.ceil(diff / 60_000);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.ceil(minutes / 60);
-  if (hours < 48) return `${hours}h`;
-  return `${Math.ceil(hours / 24)}d`;
-}
-
-// Zero-padded "HH:MM" for short windows (5h). Mirrors panels/minimax.tsx.
-function formatResetHHMM(window?: RateWindow): string {
-  if (!window?.resetAt) return "?";
-  const diff = window.resetAt - Date.now();
-  if (diff <= 0) return "00:00";
-  const totalMinutes = Math.ceil(diff / 60_000);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
-}
-
 function formatExpiry(expiresAt?: number): string {
   if (!expiresAt) return "?";
   const diff = expiresAt - Date.now();
   if (diff <= 0) return "expired";
-  const days = Math.round(diff / 86_400_000);
+  const days = Math.round(diff / MS_PER_DAY);
   if (Math.abs(days) < 1) return `${Math.round(diff / 3_600_000)}h`;
   return `${days}d`;
 }
@@ -95,6 +69,7 @@ export const CodexAccountsPanel = () => {
   load();
 
   const interval = setInterval(load, REFRESH_MS);
+  interval.unref?.();
   onCleanup(() => clearInterval(interval));
 
   const state = codex();
@@ -113,7 +88,7 @@ export const CodexAccountsPanel = () => {
       const fiveHour = account.rateLimits?.fiveHour;
       const weekly = account.rateLimits?.weekly;
       lines.push({
-        text: `  5h ${formatPercent(fiveHour)} (${formatResetHHMM(fiveHour)}) · 7d ${formatPercent(weekly)} (${formatReset(weekly)})`,
+        text: `  5h ${formatPercent(fiveHour)} (${formatDurationHM(fiveHour?.resetAt)}) · 7d ${formatPercent(weekly)} (${formatDurationShort(weekly?.resetAt)})`,
         color: usageColor(fiveHour),
       });
     }
