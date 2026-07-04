@@ -37,6 +37,7 @@ export type RateWindow = {
   limit?: number;
   resetAt?: number;
   used?: number;
+  updatedAt?: number;
 };
 
 export type CodexAccount = {

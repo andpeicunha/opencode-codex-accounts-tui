@@ -10,6 +10,25 @@ import { COLOR_OK, COLOR_WARN, COLOR_DANGER, COLOR_MUTED, formatDurationShort, f
 
 const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 15_000);
 
+// Hide accounts that are clearly abandoned: invalid auth, or a 5h quota
+// exhausted for more than this many days (oc-codex-multi-account only
+// refreshes rateLimits on use, so a stale 0 means the user moved on).
+const STALE_QUOTA_DAYS = 7;
+const STALE_QUOTA_MS = STALE_QUOTA_DAYS * MS_PER_DAY;
+
+function isStaleAccount(account: CodexAccount): boolean {
+  if (account.authInvalid) return true;
+  const fh = account.rateLimits?.fiveHour;
+  if (
+    fh?.remaining === 0 &&
+    typeof fh.updatedAt === "number" &&
+    Date.now() - fh.updatedAt > STALE_QUOTA_MS
+  ) {
+    return true;
+  }
+  return false;
+}
+
 type PanelLine = { text: string; color?: string };
 
 function usageRatio(window?: RateWindow): number | null {
@@ -80,6 +99,7 @@ export const CodexAccountsPanel = () => {
     lines.push({ text: state.error ?? "codex read error", color: COLOR_DANGER });
   } else {
     for (const account of state.accounts) {
+      if (isStaleAccount(account)) continue;
       const marker = state.activeAlias === account.alias ? "●" : "○";
       lines.push({
         text: `${marker} ${account.alias} · ${codexAccountHealth(account)} · exp:${formatExpiry(account.expiresAt)}`,
