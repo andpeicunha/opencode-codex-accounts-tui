@@ -16,6 +16,13 @@ const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 15_00
 const STALE_QUOTA_DAYS = 7;
 const STALE_QUOTA_MS = STALE_QUOTA_DAYS * MS_PER_DAY;
 
+// oc-codex-multi-account only refreshes rateLimits when intercepting real
+// OpenAI responses, so a 5h window with updatedAt older than this means
+// the user hasn't used Codex recently — the numbers are still shown but
+// they don't reflect current usage.
+const STALE_DATA_MIN = 30;
+const STALE_DATA_MS = STALE_DATA_MIN * 60_000;
+
 function isStaleAccount(account: CodexAccount): boolean {
   if (account.authInvalid) return true;
   const fh = account.rateLimits?.fiveHour;
@@ -27,6 +34,23 @@ function isStaleAccount(account: CodexAccount): boolean {
     return true;
   }
   return false;
+}
+
+// Format the 5h reset timer, marking it as stale when the underlying
+// rateLimits.updatedAt is too old (no recent Codex usage). This is more
+// honest than showing `(719:51)` for a 30-day-old cached resetAt.
+function formatFiveHourReset(window?: RateWindow): string {
+  if (!window?.resetAt) return "?";
+  const updatedAt = window.updatedAt;
+  if (typeof updatedAt === "number" && Date.now() - updatedAt > STALE_DATA_MS) {
+    const ageMs = Date.now() - updatedAt;
+    const ageMin = Math.floor(ageMs / 60_000);
+    if (ageMin < 60) return `stale ${ageMin}m`;
+    const ageH = Math.floor(ageMin / 60);
+    const ageM = ageMin % 60;
+    return ageM > 0 ? `stale ${ageH}h${ageM}m` : `stale ${ageH}h`;
+  }
+  return formatDurationHM(window.resetAt);
 }
 
 type PanelLine = { text: string; color?: string };
@@ -108,7 +132,7 @@ export const CodexAccountsPanel = () => {
       const fiveHour = account.rateLimits?.fiveHour;
       const weekly = account.rateLimits?.weekly;
       lines.push({
-        text: `  5h ${formatPercent(fiveHour)} (${formatDurationHM(fiveHour?.resetAt)}) · 7d ${formatPercent(weekly)} (${formatDurationShort(weekly?.resetAt)})`,
+        text: `  5h ${formatPercent(fiveHour)} (${formatFiveHourReset(fiveHour)}) · 7d ${formatPercent(weekly)} (${formatDurationShort(weekly?.resetAt)})`,
         color: usageColor(fiveHour),
       });
     }
