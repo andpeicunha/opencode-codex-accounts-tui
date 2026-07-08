@@ -1,5 +1,6 @@
 /** @jsxImportSource @opentui/solid */
-import { createSignal, onCleanup, Show } from "solid-js";
+import { createEffect, createSignal, onCleanup, Show } from "solid-js";
+import type { TuiPluginApi } from "@opencode-ai/plugin/tui";
 import { loadState, type MiniMaxProviderState } from "../providers-state.js";
 import {
   COLOR_DANGER,
@@ -11,7 +12,7 @@ import { ProviderPanel, type PanelLine } from "./generic.js";
 
 const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 2_000);
 
-export const MinimaxUsagePanel = () => {
+export const MinimaxUsagePanel = (props: { api: TuiPluginApi }) => {
   const [m, setM] = createSignal<MiniMaxProviderState | null>(null);
 
   const load = () => {
@@ -19,8 +20,27 @@ export const MinimaxUsagePanel = () => {
   };
 
   load();
+
   const interval = setInterval(load, REFRESH_MS);
-  onCleanup(() => clearInterval(interval));
+
+  createEffect(() => {
+    const _ = m();
+    try { props.api.renderer.requestRender(); } catch {}
+  });
+
+  const unsubs: Array<() => void> = [];
+  try {
+    unsubs.push(props.api.event.on("session.updated", load));
+    unsubs.push(props.api.event.on("session.next.text.ended", load));
+    unsubs.push(props.api.event.on("message.updated", load));
+  } catch {}
+
+  onCleanup(() => {
+    clearInterval(interval);
+    for (const fn of unsubs) {
+      try { fn(); } catch {}
+    }
+  });
 
   return (
     <Show when={m()}>

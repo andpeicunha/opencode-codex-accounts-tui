@@ -1,5 +1,6 @@
 /** @jsxImportSource @opentui/solid */
-import { createSignal, onCleanup, Show } from "solid-js";
+import { createEffect, createSignal, onCleanup, Show } from "solid-js";
+import type { TuiPluginApi } from "@opencode-ai/plugin/tui";
 import {
   loadState,
   type CodexAccount,
@@ -19,13 +20,9 @@ import { ProviderPanel, type PanelLine } from "./generic.js";
 
 const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 2_000);
 
-// Hide accounts that are clearly abandoned: invalid auth, or a 5h quota
-// exhausted for more than this many days.
 const STALE_QUOTA_DAYS = 7;
 const STALE_QUOTA_MS = STALE_QUOTA_DAYS * MS_PER_DAY;
 
-// If quota metadata is stale, show that explicitly instead of pretending the
-// reset time is still current.
 const STALE_DATA_MIN = 30;
 const STALE_DATA_MS = STALE_DATA_MIN * 60_000;
 
@@ -42,9 +39,6 @@ function isStaleAccount(account: CodexAccount): boolean {
   return false;
 }
 
-// Format the 5h reset timer, marking it as stale when the underlying
-// rateLimits.updatedAt is too old (no recent Codex usage). This is more
-// honest than showing `(719:51)` for a 30-day-old cached resetAt.
 function formatFiveHourReset(window?: RateWindow): string {
   if (!window?.resetAt) return "?";
   const updatedAt = window.updatedAt;
@@ -79,7 +73,7 @@ function formatPercent(window?: RateWindow): string {
   return ratio === null ? "?" : `${Math.round(ratio * 100)}%`;
 }
 
-export const CodexAccountsPanel = () => {
+export const CodexAccountsPanel = (props: { api: TuiPluginApi }) => {
   const [codex, setCodex] = createSignal<CodexProviderState | null>(null);
 
   const load = () => {
@@ -88,8 +82,27 @@ export const CodexAccountsPanel = () => {
   };
 
   load();
+
   const interval = setInterval(load, REFRESH_MS);
-  onCleanup(() => clearInterval(interval));
+
+  createEffect(() => {
+    const _ = codex();
+    try { props.api.renderer.requestRender(); } catch {}
+  });
+
+  const unsubs: Array<() => void> = [];
+  try {
+    unsubs.push(props.api.event.on("session.updated", load));
+    unsubs.push(props.api.event.on("session.next.text.ended", load));
+    unsubs.push(props.api.event.on("message.updated", load));
+  } catch {}
+
+  onCleanup(() => {
+    clearInterval(interval);
+    for (const fn of unsubs) {
+      try { fn(); } catch {}
+    }
+  });
 
   return (
     <Show when={codex()}>

@@ -1,5 +1,6 @@
 /** @jsxImportSource @opentui/solid */
-import { createSignal, onCleanup, Show } from "solid-js";
+import { createEffect, createSignal, onCleanup, Show } from "solid-js";
+import type { TuiPluginApi } from "@opencode-ai/plugin/tui";
 import {
   loadState,
   type OpenCodeGoProviderState,
@@ -11,15 +12,13 @@ const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 2_000
 
 type Window = NonNullable<OpenCodeGoProviderState["windows"]>[keyof NonNullable<OpenCodeGoProviderState["windows"]>];
 
-// Short windows (5h) deserve HH:MM precision so you can see the exact minute
-// the rate resets. Longer windows (7d, 30d) collapse to h/d.
 function formatReset(window: Window | undefined, kind: "short" | "long"): string {
   if (!window) return "?";
   const fn = kind === "short" ? formatDurationHM : formatDurationShort;
   return `${window.usedPct}% (${fn(window.resetAt ?? null)})`;
 }
 
-export const OpenCodeGoPanel = () => {
+export const OpenCodeGoPanel = (props: { api: TuiPluginApi }) => {
   const [s, setS] = createSignal<OpenCodeGoProviderState | null>(null);
 
   const load = () => {
@@ -27,8 +26,33 @@ export const OpenCodeGoPanel = () => {
   };
 
   load();
+
+  // Fallback interval — reloads state every 2s regardless of events
   const interval = setInterval(load, REFRESH_MS);
-  onCleanup(() => clearInterval(interval));
+
+  // Force TUI repaint whenever the signal value changes.
+  // This is the key fix: SolidJS signals update, but the TUI may not
+  // re-render without an explicit requestRender() call.
+  createEffect(() => {
+    const _ = s();
+    try { props.api.renderer.requestRender(); } catch {}
+  });
+
+  // Subscribe to TUI session/message events so state reloads happen
+  // reactively as the user interacts with OpenCode, not just on a timer.
+  const unsubs: Array<() => void> = [];
+  try {
+    unsubs.push(props.api.event.on("session.updated", load));
+    unsubs.push(props.api.event.on("session.next.text.ended", load));
+    unsubs.push(props.api.event.on("message.updated", load));
+  } catch {}
+
+  onCleanup(() => {
+    clearInterval(interval);
+    for (const fn of unsubs) {
+      try { fn(); } catch {}
+    }
+  });
 
   return (
     <Show when={s()}>
