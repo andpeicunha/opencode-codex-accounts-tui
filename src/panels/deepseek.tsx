@@ -4,7 +4,7 @@ import { loadState, type DeepSeekProviderState } from "../providers-state.js";
 import { balanceColor } from "../lib/format.js";
 import { ProviderPanel, type PanelLine } from "./generic.js";
 
-const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 5_000);
+const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 2_000);
 
 export const DeepseekUsagePanel = () => {
   const [ds, setDs] = createSignal<DeepSeekProviderState | null>(null);
@@ -15,7 +15,6 @@ export const DeepseekUsagePanel = () => {
 
   load();
   const interval = setInterval(load, REFRESH_MS);
-  interval.unref?.();
   onCleanup(() => clearInterval(interval));
 
   return (

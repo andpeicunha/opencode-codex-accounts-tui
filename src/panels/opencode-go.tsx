@@ -7,7 +7,7 @@ import {
 import { formatDurationHM, formatDurationShort, usageColor } from "../lib/format.js";
 import { ProviderPanel, type PanelLine } from "./generic.js";
 
-const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 5_000);
+const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 2_000);
 
 type Window = NonNullable<OpenCodeGoProviderState["windows"]>[keyof NonNullable<OpenCodeGoProviderState["windows"]>];
 
@@ -28,7 +28,6 @@ export const OpenCodeGoPanel = () => {
 
   load();
   const interval = setInterval(load, REFRESH_MS);
-  interval.unref?.();
   onCleanup(() => clearInterval(interval));
 
   return (

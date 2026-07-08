@@ -17,7 +17,7 @@ import {
 } from "../lib/format.js";
 import { ProviderPanel, type PanelLine } from "./generic.js";
 
-const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 5_000);
+const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 2_000);
 
 // Hide accounts that are clearly abandoned: invalid auth, or a 5h quota
 // exhausted for more than this many days.
@@ -89,7 +89,6 @@ export const CodexAccountsPanel = () => {
 
   load();
   const interval = setInterval(load, REFRESH_MS);
-  interval.unref?.();
   onCleanup(() => clearInterval(interval));
 
   return (

@@ -9,7 +9,7 @@ import {
 } from "../lib/format.js";
 import { ProviderPanel, type PanelLine } from "./generic.js";
 
-const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 5_000);
+const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 2_000);
 
 export const MinimaxUsagePanel = () => {
   const [m, setM] = createSignal<MiniMaxProviderState | null>(null);
@@ -20,7 +20,6 @@ export const MinimaxUsagePanel = () => {
 
   load();
   const interval = setInterval(load, REFRESH_MS);
-  interval.unref?.();
   onCleanup(() => clearInterval(interval));
 
   return (
