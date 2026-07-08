@@ -1,14 +1,14 @@
 /**
- * Unified providers state written by the server-side monitor plugin
- * and consumed by the TUI sidebar.
+ * Shared contracts between the server-side providers monitor and the TUI sidebar.
  *
- * Shared contract only: file paths, loaders, and TypeScript types exchanged
- * between providers-monitor.ts and index.tsx.
+ * - File paths: where monitor writes state and where panels read it.
+ * - Type definitions: the shape of that state.
+ * - Loaders: file -> typed object for the TUI side.
  *
- * Three billing models are represented:
- *  - Codex:    subscription with 5h/weekly rate windows
- *  - DeepSeek: pay-per-token, optional /user/balance probe
- *  - MiniMax:  pay-per-token (standard key) or token-plan with quota windows
+ * The state is a snapshot of multiple providers polled independently, each with
+ * its own billing model (subscription quota windows, pay-per-token balance,
+ * dashboard-scraped usage). One snapshot is written per tick and consumed by
+ * every sidebar panel.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -19,18 +19,29 @@ export const PROVIDERS_STATE_PATH = resolvePath(
   join(homedir(), ".config", "opencode", "providers-state.json"),
 );
 
-export const PROVIDERS_MANUAL_STATE_PATH = resolvePath(
-  process.env.OPENCODE_PROVIDERS_MANUAL_STATE_PATH,
-  join(homedir(), ".config", "opencode", "providers-manual-state.json"),
+export const CODEX_AUTH_PATH = resolvePath(
+  process.env.OPENCODE_CODEX_AUTH_PATH,
+  join(homedir(), ".codex", "auth.json"),
 );
 
-export const CODEX_STORE_PATH = resolvePath(
-  process.env.OPENCODE_CODEX_ACCOUNTS_STORE_PATH,
-  join(homedir(), ".config", "opencode", "codex-multi-account-accounts.json"),
+export const CODEX_STATE_PATH = resolvePath(
+  process.env.OPENCODE_CODEX_STATE_PATH,
+  join(homedir(), ".config", "opencode", "codex-oauth-state.json"),
+);
+
+export const OPENCODE_GO_CONFIG_PATH = resolvePath(
+  process.env.OPENCODE_OPENCODE_GO_CONFIG_PATH,
+  join(homedir(), ".config", "opencode", "opencode-quota", "opencode-go.json"),
 );
 
 export const DEFAULT_REFRESH_MS = 30_000;
 export const CODEX_EXPIRY_WARN_DAYS = 30;
+export const OPENCODE_GO_REFRESH_MS = 60_000;
+export const FETCH_TIMEOUT_MS = 8_000;
+
+// OpenCode Go dashboard URL pieces. Keep in sync with @slkiser/opencode-quota.
+export const OPENCODE_GO_DASHBOARD_URL_PREFIX = "https://opencode.ai/workspace/";
+export const OPENCODE_GO_DASHBOARD_URL_SUFFIX = "/go";
 
 export type RateWindow = {
   remaining?: number;
@@ -74,6 +85,18 @@ export type DeepSeekProviderState = {
   transient?: boolean;
 };
 
+export type OpenCodeGoProviderState = {
+  type: "subscription";
+  status: "ok" | "error" | "missing-config";
+  windows?: {
+    rolling?: { usedPct: number; resetInSec: number; resetAt?: number };
+    weekly?: { usedPct: number; resetInSec: number; resetAt?: number };
+    monthly?: { usedPct: number; resetInSec: number; resetAt?: number };
+  };
+  error?: string;
+  transient?: boolean;
+};
+
 export type MiniMaxProviderState = {
   type: "pay-per-token" | "token-plan";
   status: "ok" | "error" | "missing-key" | "rate-limited";
@@ -82,11 +105,6 @@ export type MiniMaxProviderState = {
   quota?: {
     fiveHour?: RateWindow;
     weekly?: RateWindow;
-  };
-  manualCredits?: {
-    balance?: number;
-    unit?: string;
-    note?: string;
   };
   error?: string;
   transient?: boolean;
@@ -97,6 +115,7 @@ export type ProvidersState = {
   providers: {
     codex: CodexProviderState;
     deepseek: DeepSeekProviderState;
+    opencodeGo: OpenCodeGoProviderState;
     minimax: MiniMaxProviderState;
   };
 };
@@ -117,19 +136,26 @@ export function loadState(): ProvidersState | null {
   }
 }
 
-export type ManualProvidersState = {
-  minimax?: {
-    credits?: number;
-    unit?: string;
-    note?: string;
-  };
-};
-
-export function loadManualState(): ManualProvidersState | null {
+export function readJsonFile(path: string): unknown {
+  if (!existsSync(path)) return null;
   try {
-    if (!existsSync(PROVIDERS_MANUAL_STATE_PATH)) return null;
-    return JSON.parse(readFileSync(PROVIDERS_MANUAL_STATE_PATH, "utf8")) as ManualProvidersState;
+    return JSON.parse(readFileSync(path, "utf8")) as unknown;
   } catch {
     return null;
   }
+}
+
+export async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message.slice(0, 80);
+  return String(error).slice(0, 80);
 }

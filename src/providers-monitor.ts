@@ -7,8 +7,8 @@
  * coordinates timing, transient-failure suppression, and the write loop.
  */
 import type { Plugin, PluginModule } from "@opencode-ai/plugin";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import {
   DEFAULT_REFRESH_MS,
   PROVIDERS_STATE_PATH,
@@ -34,9 +34,13 @@ const deepseekFailures: FailureTracker<DeepSeekProviderState> = { count: 0, last
 const opencodeGoFailures: FailureTracker<OpenCodeGoProviderState> = { count: 0, lastGood: null };
 const minimaxFailures: FailureTracker<MiniMaxProviderState> = { count: 0, lastGood: null };
 
+// Atomic write: write to a temp file then rename. The TUI watcher fires once
+// on the rename, and readers never see a partial JSON.
 function writeState(state: ProvidersState): void {
   mkdirSync(dirname(PROVIDERS_STATE_PATH), { recursive: true });
-  writeFileSync(PROVIDERS_STATE_PATH, JSON.stringify(state, null, 2) + "\n");
+  const tmpPath = join(dirname(PROVIDERS_STATE_PATH), `.providers-state.${process.pid}.tmp`);
+  writeFileSync(tmpPath, JSON.stringify(state, null, 2) + "\n");
+  renameSync(tmpPath, PROVIDERS_STATE_PATH);
 }
 
 function applyTransientSuppression<T extends { status: string; transient?: boolean }>(
