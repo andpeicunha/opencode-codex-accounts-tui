@@ -1,25 +1,31 @@
 /** @jsxImportSource @opentui/solid */
-import { Show, createSignal, onCleanup } from "solid-js";
+import { createSignal, onCleanup } from "solid-js";
 import {
   loadState,
   type CodexAccount,
   type CodexProviderState,
   type RateWindow,
 } from "../providers-state.js";
-import { COLOR_OK, COLOR_WARN, COLOR_DANGER, COLOR_MUTED, formatDurationShort, formatDurationHM, MS_PER_DAY } from "../lib/format.js";
+import {
+  COLOR_OK,
+  COLOR_WARN,
+  COLOR_DANGER,
+  COLOR_MUTED,
+  formatDurationHM,
+  formatDurationShort,
+  MS_PER_DAY,
+} from "../lib/format.js";
+import { ProviderPanel, type PanelLine } from "./generic.js";
 
-const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 15_000);
+const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 5_000);
 
 // Hide accounts that are clearly abandoned: invalid auth, or a 5h quota
-// exhausted for more than this many days (oc-codex-multi-account only
-// refreshes rateLimits on use, so a stale 0 means the user moved on).
+// exhausted for more than this many days.
 const STALE_QUOTA_DAYS = 7;
 const STALE_QUOTA_MS = STALE_QUOTA_DAYS * MS_PER_DAY;
 
-// oc-codex-multi-account only refreshes rateLimits when intercepting real
-// OpenAI responses, so a 5h window with updatedAt older than this means
-// the user hasn't used Codex recently — the numbers are still shown but
-// they don't reflect current usage.
+// If quota metadata is stale, show that explicitly instead of pretending the
+// reset time is still current.
 const STALE_DATA_MIN = 30;
 const STALE_DATA_MS = STALE_DATA_MIN * 60_000;
 
@@ -53,8 +59,6 @@ function formatFiveHourReset(window?: RateWindow): string {
   return formatDurationHM(window.resetAt);
 }
 
-type PanelLine = { text: string; color?: string };
-
 function usageRatio(window?: RateWindow): number | null {
   if (!window || typeof window.remaining !== "number" || typeof window.limit !== "number" || window.limit <= 0) {
     return null;
@@ -75,32 +79,6 @@ function formatPercent(window?: RateWindow): string {
   return ratio === null ? "?" : `${Math.round(ratio * 100)}%`;
 }
 
-function formatExpiry(expiresAt?: number): string {
-  if (!expiresAt) return "?";
-  const diff = expiresAt - Date.now();
-  if (diff <= 0) return "expired";
-  const days = Math.round(diff / MS_PER_DAY);
-  if (Math.abs(days) < 1) return `${Math.round(diff / 3_600_000)}h`;
-  return `${days}d`;
-}
-
-function codexAccountHealth(account: CodexAccount): string {
-  if (account.authInvalid) return "auth";
-  if (account.limitStatus === "error") return "err";
-  return "ok";
-}
-
-function codexAccountColor(account: CodexAccount): string {
-  if (account.authInvalid || account.limitStatus === "error") return COLOR_DANGER;
-  if (account.expiringSoon) return COLOR_WARN;
-  const fiveHour = usageRatio(account.rateLimits?.fiveHour) ?? 0;
-  const weekly = usageRatio(account.rateLimits?.weekly) ?? 0;
-  const worst = Math.max(fiveHour, weekly);
-  if (worst >= 0.8) return COLOR_DANGER;
-  if (worst >= 0.5) return COLOR_WARN;
-  return COLOR_OK;
-}
-
 export const CodexAccountsPanel = () => {
   const [codex, setCodex] = createSignal<CodexProviderState | null>(null);
 
@@ -110,13 +88,15 @@ export const CodexAccountsPanel = () => {
   };
 
   load();
-
   const interval = setInterval(load, REFRESH_MS);
   interval.unref?.();
   onCleanup(() => clearInterval(interval));
 
   const state = codex();
   if (!state || state.status === "empty") return null;
+  if (state.status === "ok" && !state.accounts.some((account) => account.rateLimits?.fiveHour || account.rateLimits?.weekly)) {
+    return null;
+  }
 
   const lines: PanelLine[] = [];
   if (state.status === "error") {
@@ -124,34 +104,16 @@ export const CodexAccountsPanel = () => {
   } else {
     for (const account of state.accounts) {
       if (isStaleAccount(account)) continue;
-      const marker = state.activeAlias === account.alias ? "●" : "○";
-      lines.push({
-        text: `${marker} ${account.alias} · ${codexAccountHealth(account)} · exp:${formatExpiry(account.expiresAt)}`,
-        color: codexAccountColor(account),
-      });
       const fiveHour = account.rateLimits?.fiveHour;
       const weekly = account.rateLimits?.weekly;
-      lines.push({
-        text: `  5h ${formatPercent(fiveHour)} (${formatFiveHourReset(fiveHour)}) · 7d ${formatPercent(weekly)} (${formatDurationShort(weekly?.resetAt)})`,
-        color: usageColor(fiveHour),
-      });
+      if (fiveHour || weekly) {
+        lines.push({
+          text: `  5h ${formatPercent(fiveHour)} (${formatFiveHourReset(fiveHour)}) · 7d ${formatPercent(weekly)} (${formatDurationShort(weekly?.resetAt)})`,
+          color: usageColor(fiveHour),
+        });
+      }
     }
   }
 
-  return (
-    <Show when={lines.length > 0}>
-      <box gap={0}>
-        <text>
-          <b>Codex</b>
-        </text>
-        <box gap={0}>
-          {lines.map((line) => (
-            <text fg={line.color ?? COLOR_MUTED} wrapMode="none">
-              {line.text || " "}
-            </text>
-          ))}
-        </box>
-      </box>
-    </Show>
-  );
+  return <ProviderPanel title="Codex" lines={lines} />;
 };

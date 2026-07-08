@@ -1,9 +1,15 @@
 /** @jsxImportSource @opentui/solid */
 import { createSignal, onCleanup } from "solid-js";
 import { loadState, type MiniMaxProviderState } from "../providers-state.js";
-import { COLOR_OK, COLOR_WARN, COLOR_DANGER, formatDurationShort, formatDurationHM, usageColor } from "../lib/format.js";
+import {
+  COLOR_DANGER,
+  formatDurationHM,
+  formatDurationShort,
+  usageColor,
+} from "../lib/format.js";
+import { ProviderPanel, type PanelLine } from "./generic.js";
 
-const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 15_000);
+const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 5_000);
 
 export const MinimaxUsagePanel = () => {
   const [m, setM] = createSignal<MiniMaxProviderState | null>(null);
@@ -18,7 +24,20 @@ export const MinimaxUsagePanel = () => {
   onCleanup(() => clearInterval(interval));
 
   const state = m();
-  if (!state || state.status !== "ok") return null;
+  if (!state) return null;
+
+  if (state.status === "error") {
+    return (
+      <ProviderPanel
+        title="Minimax"
+        lines={[{ text: `  ${state.error ?? "read error"}`, color: COLOR_DANGER }]}
+      />
+    );
+  }
+
+  if (state.status === "missing-key") return null;
+  if (state.status !== "ok") return null;
+
   const q = state.quota;
   if (!q?.fiveHour || !q?.weekly) return null;
 
@@ -27,12 +46,12 @@ export const MinimaxUsagePanel = () => {
   // Worst-of: line color reflects the most concerning window.
   const color = usageColor(Math.max(fhUsed, sdUsed));
 
-  return (
-    <box>
-      <text><b>Minimax</b></text>
-      <text fg={color} wrapMode="none">
-        {" "}5h {fhUsed}% ({formatDurationHM(q.fiveHour.resetAt)}) · 7d {sdUsed}% ({formatDurationShort(q.weekly.resetAt)})
-      </text>
-    </box>
-  );
+  const lines: PanelLine[] = [
+    {
+      text: `  5h ${fhUsed}% (${formatDurationHM(q.fiveHour.resetAt)}) · 7d ${sdUsed}% (${formatDurationShort(q.weekly.resetAt)})`,
+      color,
+    },
+  ];
+
+  return <ProviderPanel title="Minimax" lines={lines} />;
 };
