@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { createSignal, onCleanup } from "solid-js";
+import { createSignal, onCleanup, Show } from "solid-js";
 import { loadState, type DeepSeekProviderState } from "../providers-state.js";
 import { balanceColor } from "../lib/format.js";
 import { ProviderPanel, type PanelLine } from "./generic.js";
@@ -18,19 +18,17 @@ export const DeepseekUsagePanel = () => {
   interval.unref?.();
   onCleanup(() => clearInterval(interval));
 
-  const state = ds();
-  if (!state || state.status !== "ok") return null;
-
-  const balance = state.totalBalance;
-  if (typeof balance !== "number") return null;
-
-  const balanceStr = balance.toFixed(2);
-  const currency = state.currency ?? "USD";
-  const color = balanceColor(balance);
-
-  const lines: PanelLine[] = [
-    { text: `  Restante ${balanceStr} ${currency}`, color },
-  ];
-
-  return <ProviderPanel title="Deepseek" lines={lines} />;
+  return (
+    <Show when={ds() && ds()!.status === "ok" && typeof ds()!.totalBalance === "number"}>
+      <ProviderPanel
+        title="Deepseek"
+        lines={[
+          {
+            text: `  Restante ${ds()!.totalBalance!.toFixed(2)} ${ds()!.currency ?? "USD"}`,
+            color: balanceColor(ds()!.totalBalance!),
+          },
+        ]}
+      />
+    </Show>
+  );
 };

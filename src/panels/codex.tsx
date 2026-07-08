@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { createSignal, onCleanup } from "solid-js";
+import { createSignal, onCleanup, Show } from "solid-js";
 import {
   loadState,
   type CodexAccount,
@@ -92,28 +92,33 @@ export const CodexAccountsPanel = () => {
   interval.unref?.();
   onCleanup(() => clearInterval(interval));
 
-  const state = codex();
-  if (!state || state.status === "empty") return null;
-  if (state.status === "ok" && !state.accounts.some((account) => account.rateLimits?.fiveHour || account.rateLimits?.weekly)) {
-    return null;
-  }
+  return (
+    <Show when={codex()}>
+      {(state) => {
+        if (state().status === "empty") return null;
+        if (state().status === "ok" && !state().accounts.some((account) => account.rateLimits?.fiveHour || account.rateLimits?.weekly)) {
+          return null;
+        }
 
-  const lines: PanelLine[] = [];
-  if (state.status === "error") {
-    lines.push({ text: state.error ?? "codex read error", color: COLOR_DANGER });
-  } else {
-    for (const account of state.accounts) {
-      if (isStaleAccount(account)) continue;
-      const fiveHour = account.rateLimits?.fiveHour;
-      const weekly = account.rateLimits?.weekly;
-      if (fiveHour || weekly) {
-        lines.push({
-          text: `  5h ${formatPercent(fiveHour)} (${formatFiveHourReset(fiveHour)}) · 7d ${formatPercent(weekly)} (${formatDurationShort(weekly?.resetAt)})`,
-          color: usageColor(fiveHour),
-        });
-      }
-    }
-  }
+        const lines: PanelLine[] = [];
+        if (state().status === "error") {
+          lines.push({ text: state().error ?? "codex read error", color: COLOR_DANGER });
+        } else {
+          for (const account of state().accounts) {
+            if (isStaleAccount(account)) continue;
+            const fiveHour = account.rateLimits?.fiveHour;
+            const weekly = account.rateLimits?.weekly;
+            if (fiveHour || weekly) {
+              lines.push({
+                text: `  5h ${formatPercent(fiveHour)} (${formatFiveHourReset(fiveHour)}) · 7d ${formatPercent(weekly)} (${formatDurationShort(weekly?.resetAt)})`,
+                color: usageColor(fiveHour),
+              });
+            }
+          }
+        }
 
-  return <ProviderPanel title="Codex" lines={lines} />;
+        return <ProviderPanel title="Codex" lines={lines} />;
+      }}
+    </Show>
+  );
 };

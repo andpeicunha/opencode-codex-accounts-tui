@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { createSignal, onCleanup } from "solid-js";
+import { createSignal, onCleanup, Show } from "solid-js";
 import {
   loadState,
   type OpenCodeGoProviderState,
@@ -31,32 +31,36 @@ export const OpenCodeGoPanel = () => {
   interval.unref?.();
   onCleanup(() => clearInterval(interval));
 
-  const state = s();
-  if (!state || state.status === "missing-config") return null;
+  return (
+    <Show when={s()}>
+      {(state) => {
+        if (state().status === "missing-config") return null;
+        if (state().status === "error") {
+          return (
+            <ProviderPanel
+              title="OpenCode Go"
+              lines={[{ text: `  ${state().error ?? "opencode-go read error"}`, color: "#ef4444" }]}
+            />
+          );
+        }
+        if (state().status !== "ok" || !state().windows) return null;
 
-  if (state.status === "error") {
-    const lines: PanelLine[] = [
-      { text: `  ${state.error ?? "opencode-go read error"}`, color: "#ef4444" },
-    ];
-    return <ProviderPanel title="OpenCode Go" lines={lines} />;
-  }
+        const rolling = state().windows!.rolling;
+        const weekly = state().windows!.weekly;
+        const monthly = state().windows!.monthly;
 
-  if (state.status !== "ok" || !state.windows) return null;
+        const worstPct = Math.max(rolling?.usedPct ?? 0, weekly?.usedPct ?? 0, monthly?.usedPct ?? 0);
+        const color = usageColor(worstPct);
 
-  const rolling = state.windows.rolling;
-  const weekly = state.windows.weekly;
-  const monthly = state.windows.monthly;
+        const lines: PanelLine[] = [
+          {
+            text: `  5h ${formatReset(rolling, "short")} · 7d ${formatReset(weekly, "long")} · 30d ${formatReset(monthly, "long")}`,
+            color,
+          },
+        ];
 
-  // Line color reflects the worst of the three windows.
-  const worstPct = Math.max(rolling?.usedPct ?? 0, weekly?.usedPct ?? 0, monthly?.usedPct ?? 0);
-  const color = usageColor(worstPct);
-
-  const lines: PanelLine[] = [
-    {
-      text: `  5h ${formatReset(rolling, "short")} · 7d ${formatReset(weekly, "long")} · 30d ${formatReset(monthly, "long")}`,
-      color,
-    },
-  ];
-
-  return <ProviderPanel title="OpenCode Go" lines={lines} />;
+        return <ProviderPanel title="OpenCode Go" lines={lines} />;
+      }}
+    </Show>
+  );
 };

@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { createSignal, onCleanup } from "solid-js";
+import { createSignal, onCleanup, Show } from "solid-js";
 import { loadState, type MiniMaxProviderState } from "../providers-state.js";
 import {
   COLOR_DANGER,
@@ -23,35 +23,38 @@ export const MinimaxUsagePanel = () => {
   interval.unref?.();
   onCleanup(() => clearInterval(interval));
 
-  const state = m();
-  if (!state) return null;
+  return (
+    <Show when={m()}>
+      {(state) => {
+        if (state().status === "missing-key") return null;
+        if (state().status === "error") {
+          return (
+            <ProviderPanel
+              title="Minimax"
+              lines={[{ text: `  ${state().error ?? "read error"}`, color: COLOR_DANGER }]}
+            />
+          );
+        }
+        if (state().status !== "ok") return null;
+        const q = state().quota;
+        if (!q?.fiveHour || !q?.weekly) return null;
 
-  if (state.status === "error") {
-    return (
-      <ProviderPanel
-        title="Minimax"
-        lines={[{ text: `  ${state.error ?? "read error"}`, color: COLOR_DANGER }]}
-      />
-    );
-  }
+        const fhUsed = q.fiveHour.used ?? 0;
+        const sdUsed = q.weekly.used ?? 0;
+        const color = usageColor(Math.max(fhUsed, sdUsed));
 
-  if (state.status === "missing-key") return null;
-  if (state.status !== "ok") return null;
-
-  const q = state.quota;
-  if (!q?.fiveHour || !q?.weekly) return null;
-
-  const fhUsed = q.fiveHour.used ?? 0;
-  const sdUsed = q.weekly.used ?? 0;
-  // Worst-of: line color reflects the most concerning window.
-  const color = usageColor(Math.max(fhUsed, sdUsed));
-
-  const lines: PanelLine[] = [
-    {
-      text: `  5h ${fhUsed}% (${formatDurationHM(q.fiveHour.resetAt)}) · 7d ${sdUsed}% (${formatDurationShort(q.weekly.resetAt)})`,
-      color,
-    },
-  ];
-
-  return <ProviderPanel title="Minimax" lines={lines} />;
+        return (
+          <ProviderPanel
+            title="Minimax"
+            lines={[
+              {
+                text: `  5h ${fhUsed}% (${formatDurationHM(q.fiveHour.resetAt)}) · 7d ${sdUsed}% (${formatDurationShort(q.weekly.resetAt)})`,
+                color,
+              },
+            ]}
+          />
+        );
+      }}
+    </Show>
+  );
 };
