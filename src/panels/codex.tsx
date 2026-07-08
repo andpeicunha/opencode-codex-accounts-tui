@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { createEffect, createSignal, onCleanup, Show } from "solid-js";
+import { createSignal, onCleanup, createMemo } from "solid-js";
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui";
 import {
   loadState,
@@ -16,13 +16,10 @@ import {
   formatDurationShort,
   MS_PER_DAY,
 } from "../lib/format.js";
-import { ProviderPanel, type PanelLine } from "./generic.js";
 
 const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 2_000);
-
 const STALE_QUOTA_DAYS = 7;
 const STALE_QUOTA_MS = STALE_QUOTA_DAYS * MS_PER_DAY;
-
 const STALE_DATA_MIN = 30;
 const STALE_DATA_MS = STALE_DATA_MIN * 60_000;
 
@@ -79,58 +76,60 @@ export const CodexAccountsPanel = (props: { api: TuiPluginApi }) => {
   const load = () => {
     const s = loadState();
     if (s) setCodex(s.providers.codex);
+    try { props.api.renderer.requestRender(); } catch {}
   };
-
   load();
 
   const interval = setInterval(load, REFRESH_MS);
+  onCleanup(() => clearInterval(interval));
 
-  createEffect(() => {
-    const _ = codex();
-    try { props.api.renderer.requestRender(); } catch {}
-  });
-
-  const unsubs: Array<() => void> = [];
-  try {
-    unsubs.push(props.api.event.on("session.updated", load));
-    unsubs.push(props.api.event.on("session.next.text.ended", load));
-    unsubs.push(props.api.event.on("message.updated", load));
-  } catch {}
-
-  onCleanup(() => {
-    clearInterval(interval);
-    for (const fn of unsubs) {
-      try { fn(); } catch {}
+  const view = createMemo(() => {
+    const state = codex();
+    if (!state) return <text> </text>;
+    if (state.status === "empty") return <text> </text>;
+    if (state.status === "ok" && !state.accounts.some((account) => account.rateLimits?.fiveHour || account.rateLimits?.weekly)) {
+      return <text> </text>;
     }
+
+    if (state.status === "error") {
+      return (
+        <box gap={0}>
+          <text><b>Codex</b></text>
+          <text fg={COLOR_DANGER} wrapMode="none">
+            {"  "}{state.error ?? "codex read error"}
+          </text>
+        </box>
+      );
+    }
+
+    // Build pre-formatted line strings (not arrays, no <For>)
+    const lines: Array<[string, string]> = [];
+    for (const account of state.accounts) {
+      if (isStaleAccount(account)) continue;
+      const fiveHour = account.rateLimits?.fiveHour;
+      const weekly = account.rateLimits?.weekly;
+      if (fiveHour || weekly) {
+        const color = usageColor(fiveHour);
+        const text = `  5h ${formatPercent(fiveHour)} (${formatFiveHourReset(fiveHour)}) · 7d ${formatPercent(weekly)} (${formatDurationShort(weekly?.resetAt)})`;
+        lines.push([color, text]);
+      }
+    }
+
+    if (lines.length === 0) return <text> </text>;
+
+    return (
+      <box gap={0}>
+        <text><b>Codex</b></text>
+        <box gap={0}>
+          {lines.map(([color, text]) => (
+            <text fg={color} wrapMode="none">
+              {text}
+            </text>
+          ))}
+        </box>
+      </box>
+    );
   });
 
-  return (
-    <Show when={codex()}>
-      {(state) => {
-        if (state().status === "empty") return null;
-        if (state().status === "ok" && !state().accounts.some((account) => account.rateLimits?.fiveHour || account.rateLimits?.weekly)) {
-          return null;
-        }
-
-        const lines: PanelLine[] = [];
-        if (state().status === "error") {
-          lines.push({ text: state().error ?? "codex read error", color: COLOR_DANGER });
-        } else {
-          for (const account of state().accounts) {
-            if (isStaleAccount(account)) continue;
-            const fiveHour = account.rateLimits?.fiveHour;
-            const weekly = account.rateLimits?.weekly;
-            if (fiveHour || weekly) {
-              lines.push({
-                text: `  5h ${formatPercent(fiveHour)} (${formatFiveHourReset(fiveHour)}) · 7d ${formatPercent(weekly)} (${formatDurationShort(weekly?.resetAt)})`,
-                color: usageColor(fiveHour),
-              });
-            }
-          }
-        }
-
-        return <ProviderPanel title="Codex" lines={lines} />;
-      }}
-    </Show>
-  );
+  return view;
 };

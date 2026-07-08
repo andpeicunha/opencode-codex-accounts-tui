@@ -1,12 +1,11 @@
 /** @jsxImportSource @opentui/solid */
-import { createEffect, createSignal, onCleanup, Show } from "solid-js";
+import { createSignal, onCleanup, createMemo } from "solid-js";
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui";
 import {
   loadState,
   type OpenCodeGoProviderState,
 } from "../providers-state.js";
 import { formatDurationHM, formatDurationShort, usageColor } from "../lib/format.js";
-import { ProviderPanel, type PanelLine } from "./generic.js";
 
 const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 2_000);
 
@@ -23,67 +22,46 @@ export const OpenCodeGoPanel = (props: { api: TuiPluginApi }) => {
 
   const load = () => {
     setS(loadState()?.providers?.opencodeGo ?? null);
+    try { props.api.renderer.requestRender(); } catch {}
   };
-
   load();
 
-  // Fallback interval — reloads state every 2s regardless of events
   const interval = setInterval(load, REFRESH_MS);
+  onCleanup(() => clearInterval(interval));
 
-  // Force TUI repaint whenever the signal value changes.
-  // This is the key fix: SolidJS signals update, but the TUI may not
-  // re-render without an explicit requestRender() call.
-  createEffect(() => {
-    const _ = s();
-    try { props.api.renderer.requestRender(); } catch {}
-  });
-
-  // Subscribe to TUI session/message events so state reloads happen
-  // reactively as the user interacts with OpenCode, not just on a timer.
-  const unsubs: Array<() => void> = [];
-  try {
-    unsubs.push(props.api.event.on("session.updated", load));
-    unsubs.push(props.api.event.on("session.next.text.ended", load));
-    unsubs.push(props.api.event.on("message.updated", load));
-  } catch {}
-
-  onCleanup(() => {
-    clearInterval(interval);
-    for (const fn of unsubs) {
-      try { fn(); } catch {}
+  // Reactive view: recomputes whenever s() changes.
+  // requestRender() is called synchronously after setS(), so the TUI
+  // repaints the latest memo value without needing createEffect.
+  const view = createMemo(() => {
+    const state = s();
+    if (!state) return <text> </text>;
+    if (state.status === "missing-config") return <text> </text>;
+    if (state.status === "error") {
+      return (
+        <box gap={0}>
+          <text><b>OpenCode Go</b></text>
+          <text fg="#ef4444" wrapMode="none">
+            {"  "}{state.error ?? "opencode-go read error"}
+          </text>
+        </box>
+      );
     }
+    if (state.status !== "ok" || !state.windows) return <text> </text>;
+
+    const rolling = state.windows.rolling;
+    const weekly = state.windows.weekly;
+    const monthly = state.windows.monthly;
+    const worstPct = Math.max(rolling?.usedPct ?? 0, weekly?.usedPct ?? 0, monthly?.usedPct ?? 0);
+
+    return (
+      <box gap={0}>
+        <text><b>OpenCode Go</b></text>
+        <text fg={usageColor(worstPct)} wrapMode="none">
+          {"  5h "}{formatReset(rolling, "short")}{" · 7d "}{formatReset(weekly, "long")}{" · 30d "}{formatReset(monthly, "long")}
+        </text>
+      </box>
+    );
   });
 
-  return (
-    <Show when={s()}>
-      {(state) => {
-        if (state().status === "missing-config") return null;
-        if (state().status === "error") {
-          return (
-            <ProviderPanel
-              title="OpenCode Go"
-              lines={[{ text: `  ${state().error ?? "opencode-go read error"}`, color: "#ef4444" }]}
-            />
-          );
-        }
-        if (state().status !== "ok" || !state().windows) return null;
-
-        const rolling = state().windows!.rolling;
-        const weekly = state().windows!.weekly;
-        const monthly = state().windows!.monthly;
-
-        const worstPct = Math.max(rolling?.usedPct ?? 0, weekly?.usedPct ?? 0, monthly?.usedPct ?? 0);
-        const color = usageColor(worstPct);
-
-        const lines: PanelLine[] = [
-          {
-            text: `  5h ${formatReset(rolling, "short")} · 7d ${formatReset(weekly, "long")} · 30d ${formatReset(monthly, "long")}`,
-            color,
-          },
-        ];
-
-        return <ProviderPanel title="OpenCode Go" lines={lines} />;
-      }}
-    </Show>
-  );
+  return view;
 };

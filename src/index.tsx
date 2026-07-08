@@ -15,12 +15,11 @@ const tui: TuiPlugin = async (api) => {
   // when panel signals update from their own interval + event listeners.
   // This is a fallback for when event emissions are sparse or the TUI
   // render cycle doesn't pick up signal changes on its own.
+  // Safety-net: request repaint every 2s so the TUI picks up
+  // stale panel states even when no session events fire.
   const renderTimer = setInterval(() => {
-    try {
-      api.renderer.requestRender();
-    } catch {}
+    try { api.renderer.requestRender(); } catch {}
   }, 2_000);
-  if (typeof renderTimer.unref === "function") renderTimer.unref();
 
   // Sidebar order: lower renders higher in the panel. Order tuned so the
   // most-used providers (Go, Codex, DeepSeek) cluster at the top; claude and
@@ -30,8 +29,8 @@ const tui: TuiPlugin = async (api) => {
     ["CODEX",       144, () => <CodexAccountsPanel api={api} />],
     ["DEEPSEEK",    143, () => <DeepseekUsagePanel api={api} />],
     ["MINIMAX",     142, () => <MinimaxUsagePanel api={api} />],
-    ["CLAUDE",      141, () => <ClaudeUsagePanel />],
-    ["CURSOR",      146, () => <CursorUsagePanel />],
+    ["CLAUDE",      141, () => <ClaudeUsagePanel api={api} />],
+    ["CURSOR",      146, () => <CursorUsagePanel api={api} />],
   ];
 
   for (const [provider, order, render] of panels) {

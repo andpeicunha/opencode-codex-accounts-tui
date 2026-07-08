@@ -1,13 +1,12 @@
 /** @jsxImportSource @opentui/solid */
-import { Show, createSignal, onCleanup } from "solid-js";
+import { createSignal, onCleanup, createMemo } from "solid-js";
+import type { TuiPluginApi } from "@opencode-ai/plugin/tui";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { usageColor } from "../lib/format.js";
 
 const MS_PER_HOUR = 3_600_000;
-
-// Default Anthropic OAuth usage endpoint. Override via env for testing/staging.
 const USAGE_ENDPOINT =
   process.env.OPENCODE_CLAUDE_USAGE_ENDPOINT || "https://api.anthropic.com/api/oauth/usage";
 const CREDENTIALS_PATH =
@@ -96,7 +95,7 @@ async function fetchUsage(token: string): Promise<ClaudeUsageResponse> {
   return (await response.json()) as ClaudeUsageResponse;
 }
 
-export const ClaudeUsagePanel = () => {
+export const ClaudeUsagePanel = (props: { api: TuiPluginApi }) => {
   const [state, setState] = createSignal<PanelState>({ status: "missing-credentials" });
   let lastGood: PanelState | null = null;
   let transientFailures = 0;
@@ -107,6 +106,7 @@ export const ClaudeUsagePanel = () => {
     const token = creds?.claudeAiOauth?.accessToken;
     if (!token) {
       setState({ status: "missing-credentials" });
+      try { props.api.renderer.requestRender(); } catch {}
       return;
     }
 
@@ -150,7 +150,6 @@ export const ClaudeUsagePanel = () => {
     } catch (err) {
       transientFailures++;
       if (transientFailures < FAILURE_THRESHOLD && lastGood) {
-        // Keep last good state, mark stale
         setState({ ...lastGood, status: "stale", error: String(err).slice(0, 60) });
       } else {
         setState({
@@ -159,67 +158,66 @@ export const ClaudeUsagePanel = () => {
         });
       }
     }
+    try { props.api.renderer.requestRender(); } catch {}
   };
 
   void load();
   const interval = setInterval(() => void load(), REFRESH_MS);
-  interval.unref?.();
   onCleanup(() => clearInterval(interval));
 
-  const data = state();
+  const view = createMemo(() => {
+    const data = state();
 
-  if (data.status === "missing-credentials") {
+    if (data.status === "missing-credentials") {
+      return (
+        <box gap={0}>
+          <text><b>Claude Usage</b></text>
+          <text wrapMode="none">
+            {" ○ sem credenciais — rode `claude login` em ~/.claude/.credentials.json"}
+          </text>
+        </box>
+      );
+    }
+
+    const tierLabel =
+      data.tier && data.rateLimitTier
+        ? `${data.tier} · ${data.rateLimitTier}`
+        : data.tier || data.rateLimitTier || "";
+
+    const fh = data.fiveHour;
+    const sd = data.sevenDay;
+
     return (
       <box gap={0}>
-        <text>
-          <b>Claude Usage</b>
-        </text>
-        <text wrapMode="none">
-          {" "}○ sem credenciais — rode `claude login` em ~/.claude/.credentials.json
-        </text>
+        <text><b>Claude Usage</b></text>
+        {tierLabel ? (
+          <text wrapMode="none">
+            {" ● "}{tierLabel}{data.status === "stale" ? " (stale)" : ""}
+          </text>
+        ) : null}
+        {fh ? (
+          <text fg={usageColor(fh.pct)} wrapMode="none">
+            {"   5h "}{fh.pct}%{" · resets "}{fh.resetsIn}
+          </text>
+        ) : null}
+        {sd ? (
+          <text fg={usageColor(sd.pct)} wrapMode="none">
+            {"   7d "}{sd.pct}%{" · resets "}{sd.resetsIn}
+          </text>
+        ) : null}
+        {data.extraUsage?.enabled ? (
+          <text wrapMode="none">
+            {"   extra "}{data.extraUsage.pct ?? "?"}% used
+          </text>
+        ) : null}
+        {data.status === "error" && data.error ? (
+          <text wrapMode="none">
+            {"   error: "}{data.error}
+          </text>
+        ) : null}
       </box>
     );
-  }
+  });
 
-  const tierLabel =
-    data.tier && data.rateLimitTier
-      ? `${data.tier} · ${data.rateLimitTier}`
-      : data.tier || data.rateLimitTier || "";
-
-  const fh = data.fiveHour;
-  const sd = data.sevenDay;
-
-  return (
-    <box gap={0}>
-      <text>
-        <b>Claude Usage</b>
-      </text>
-      {tierLabel ? (
-        <text wrapMode="none">
-          {" "}● {tierLabel}
-          {data.status === "stale" ? " (stale)" : ""}
-        </text>
-      ) : null}
-      {fh ? (
-        <text fg={usageColor(fh.pct)} wrapMode="none">
-          {"   "}5h {fh.pct}% · resets {fh.resetsIn}
-        </text>
-      ) : null}
-      {sd ? (
-        <text fg={usageColor(sd.pct)} wrapMode="none">
-          {"   "}7d {sd.pct}% · resets {sd.resetsIn}
-        </text>
-      ) : null}
-      {data.extraUsage?.enabled ? (
-        <text wrapMode="none">
-          {"   "}extra {data.extraUsage.pct ?? "?"}% used
-        </text>
-      ) : null}
-      {data.status === "error" && data.error ? (
-        <text wrapMode="none">
-          {"   "}error: {data.error}
-        </text>
-      ) : null}
-    </box>
-  );
+  return view;
 };

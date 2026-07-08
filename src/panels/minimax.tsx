@@ -1,14 +1,8 @@
 /** @jsxImportSource @opentui/solid */
-import { createEffect, createSignal, onCleanup, Show } from "solid-js";
+import { createSignal, onCleanup, createMemo } from "solid-js";
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui";
 import { loadState, type MiniMaxProviderState } from "../providers-state.js";
-import {
-  COLOR_DANGER,
-  formatDurationHM,
-  formatDurationShort,
-  usageColor,
-} from "../lib/format.js";
-import { ProviderPanel, type PanelLine } from "./generic.js";
+import { COLOR_DANGER, formatDurationHM, formatDurationShort, usageColor } from "../lib/format.js";
 
 const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 2_000);
 
@@ -17,63 +11,44 @@ export const MinimaxUsagePanel = (props: { api: TuiPluginApi }) => {
 
   const load = () => {
     setM(loadState()?.providers?.minimax ?? null);
+    try { props.api.renderer.requestRender(); } catch {}
   };
-
   load();
 
   const interval = setInterval(load, REFRESH_MS);
+  onCleanup(() => clearInterval(interval));
 
-  createEffect(() => {
-    const _ = m();
-    try { props.api.renderer.requestRender(); } catch {}
-  });
-
-  const unsubs: Array<() => void> = [];
-  try {
-    unsubs.push(props.api.event.on("session.updated", load));
-    unsubs.push(props.api.event.on("session.next.text.ended", load));
-    unsubs.push(props.api.event.on("message.updated", load));
-  } catch {}
-
-  onCleanup(() => {
-    clearInterval(interval);
-    for (const fn of unsubs) {
-      try { fn(); } catch {}
+  const view = createMemo(() => {
+    const state = m();
+    if (!state) return <text> </text>;
+    if (state.status === "missing-key") return <text> </text>;
+    if (state.status === "error") {
+      return (
+        <box gap={0}>
+          <text><b>Minimax</b></text>
+          <text fg={COLOR_DANGER} wrapMode="none">
+            {"  "}{state.error ?? "read error"}
+          </text>
+        </box>
+      );
     }
+    if (state.status !== "ok") return <text> </text>;
+
+    const q = state.quota;
+    if (!q?.fiveHour || !q?.weekly) return <text> </text>;
+
+    const fhUsed = q.fiveHour.used ?? 0;
+    const sdUsed = q.weekly.used ?? 0;
+
+    return (
+      <box gap={0}>
+        <text><b>Minimax</b></text>
+        <text fg={usageColor(Math.max(fhUsed, sdUsed))} wrapMode="none">
+          {"  5h "}{fhUsed}%{" ("}{formatDurationHM(q.fiveHour.resetAt)}{") · 7d "}{sdUsed}%{" ("}{formatDurationShort(q.weekly.resetAt)}{")"}
+        </text>
+      </box>
+    );
   });
 
-  return (
-    <Show when={m()}>
-      {(state) => {
-        if (state().status === "missing-key") return null;
-        if (state().status === "error") {
-          return (
-            <ProviderPanel
-              title="Minimax"
-              lines={[{ text: `  ${state().error ?? "read error"}`, color: COLOR_DANGER }]}
-            />
-          );
-        }
-        if (state().status !== "ok") return null;
-        const q = state().quota;
-        if (!q?.fiveHour || !q?.weekly) return null;
-
-        const fhUsed = q.fiveHour.used ?? 0;
-        const sdUsed = q.weekly.used ?? 0;
-        const color = usageColor(Math.max(fhUsed, sdUsed));
-
-        return (
-          <ProviderPanel
-            title="Minimax"
-            lines={[
-              {
-                text: `  5h ${fhUsed}% (${formatDurationHM(q.fiveHour.resetAt)}) · 7d ${sdUsed}% (${formatDurationShort(q.weekly.resetAt)})`,
-                color,
-              },
-            ]}
-          />
-        );
-      }}
-    </Show>
-  );
+  return view;
 };
