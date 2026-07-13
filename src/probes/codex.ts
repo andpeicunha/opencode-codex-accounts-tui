@@ -157,6 +157,7 @@ function toRateWindow(window: UsageWindow | undefined, slot: WindowSlot): RateWi
   const resetAt = candidateResetAt && candidateResetAt > Date.now() && candidateResetAt - Date.now() <= maxResetMs
     ? candidateResetAt
     : undefined;
+  if (slot === "fiveHour" && !resetAt) return undefined;
   return {
     limit: 100,
     remaining: Math.max(0, Math.min(100, 100 - window.used_percent)),
