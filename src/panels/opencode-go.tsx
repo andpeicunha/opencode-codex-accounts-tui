@@ -1,13 +1,11 @@
 /** @jsxImportSource @opentui/solid */
 import { createSignal, onCleanup, createMemo } from "solid-js";
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui";
 import {
   loadState,
   type OpenCodeGoProviderState,
 } from "../providers-state.js";
+import { onTick } from "../lib/tick.js";
 import { formatDurationHM, formatDurationShort, usageColor } from "../lib/format.js";
-
-const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 2_000);
 
 type Window = NonNullable<OpenCodeGoProviderState["windows"]>[keyof NonNullable<OpenCodeGoProviderState["windows"]>];
 
@@ -17,25 +15,23 @@ function formatReset(window: Window | undefined, kind: "short" | "long"): string
   return `${window.usedPct}% (${fn(window.resetAt ?? null)})`;
 }
 
-export const OpenCodeGoPanel = (props: { api: TuiPluginApi }) => {
+export const OpenCodeGoPanel = () => {
   const [s, setS] = createSignal<OpenCodeGoProviderState | null>(null);
 
   const load = () => {
     setS(loadState()?.providers?.opencodeGo ?? null);
-    try { props.api.renderer.requestRender(); } catch {}
   };
   load();
-
-  const interval = setInterval(load, REFRESH_MS);
-  onCleanup(() => clearInterval(interval));
+  onCleanup(onTick(load));
 
   // Reactive view: recomputes whenever s() changes.
-  // requestRender() is called synchronously after setS(), so the TUI
-  // repaints the latest memo value without needing createEffect.
   const view = createMemo(() => {
     const state = s();
     if (!state) return <text> </text>;
-    if (state.status === "missing-config") return <text> </text>;
+    if (state.status === "disabled") return <text> </text>;
+    if (state.status === "missing-config") {
+      return <box gap={0}><text><b>OpenCode Go</b></text><text wrapMode="none">{"  configuração ausente"}</text></box>;
+    }
     if (state.status === "error") {
       return (
         <box gap={0}>
@@ -57,11 +53,14 @@ export const OpenCodeGoPanel = (props: { api: TuiPluginApi }) => {
       <box gap={0}>
         <text><b>OpenCode Go</b></text>
         <text fg={usageColor(worstPct)} wrapMode="none">
-          {"  5h "}{formatReset(rolling, "short")}{" · 7d "}{formatReset(weekly, "long")}{" · 30d "}{formatReset(monthly, "long")}
+          {"  5h "}{formatReset(rolling, "short")}{" · 7d "}{formatReset(weekly, "long")}
+        </text>
+        <text fg={usageColor(monthly?.usedPct ?? 0)} wrapMode="none">
+          {"  30d "}{formatReset(monthly, "long")}
         </text>
       </box>
     );
   });
 
-  return view;
+  return view();
 };

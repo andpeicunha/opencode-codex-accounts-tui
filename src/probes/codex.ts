@@ -12,11 +12,18 @@ import {
   CODEX_AUTH_PATH,
   CODEX_EXPIRY_WARN_DAYS,
   CODEX_STATE_PATH,
+  FETCH_TIMEOUT_MS,
+  fetchWithTimeout,
   readJsonFile,
   type CodexAccount,
   type CodexProviderState,
   type RateWindow,
 } from "../providers-state.js";
+import { loadCodexUsageHistory, recordWeeklySample } from "../lib/codex-usage-history.js";
+import { projectWeeklyUsage } from "../lib/codex-projection.js";
+
+const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+const USAGE_REFRESH_MS = 60_000;
 
 type CodexStore = {
   tokens?: {
@@ -35,6 +42,64 @@ type CodexBridgeState = {
   updatedAt?: number;
   rateLimits?: { fiveHour?: RateWindow; weekly?: RateWindow };
 };
+
+type UsageWindow = {
+  used_percent?: number;
+  reset_at?: number;
+  reset_after_seconds?: number;
+  /** Backend-provided window duration, when available. Prefer over heuristics. */
+  limit_window_seconds?: number;
+};
+
+type WindowSlot = "fiveHour" | "weekly" | undefined;
+
+type UsageResponse = {
+  rate_limit?: {
+    primary_window?: UsageWindow;
+    secondary_window?: UsageWindow;
+  };
+};
+
+/**
+ * Classify a /wham/usage quota window as five-hour or weekly.
+ *
+ * 1. If the backend exposes limit_window_seconds, use it directly.
+ *    - ~5h  -> fiveHour
+ *    - ~7d  -> weekly
+ * 2. Otherwise fall back to the reset horizon:
+ *    - <= 6h -> fiveHour
+ *    - ~6-8d -> weekly
+ * 3. If neither signal is usable, return undefined and do not assume a slot.
+ */
+function classifyWindow(window: UsageWindow | undefined): WindowSlot {
+  if (!window || typeof window.used_percent !== "number") return undefined;
+
+  if (typeof window.limit_window_seconds === "number" && Number.isFinite(window.limit_window_seconds)) {
+    const durationMin = window.limit_window_seconds / 60;
+    if (durationMin >= 240 && durationMin <= 360) return "fiveHour"; // 4-6h centered on 5h
+    if (durationMin >= 6 * 24 * 60 && durationMin <= 8 * 24 * 60) return "weekly"; // 6-8d centered on 7d
+    return undefined;
+  }
+
+  const resetSec =
+    typeof window.reset_after_seconds === "number" && Number.isFinite(window.reset_after_seconds)
+      ? window.reset_after_seconds
+      : typeof window.reset_at === "number" && window.reset_at > Date.now() / 1000
+        ? window.reset_at - Date.now() / 1000
+        : undefined;
+
+  if (typeof resetSec === "number" && Number.isFinite(resetSec)) {
+    const resetMin = resetSec / 60;
+    if (resetMin <= 360) return "fiveHour"; // <= 6h
+    if (resetMin >= 6 * 24 * 60 && resetMin <= 8 * 24 * 60) return "weekly"; // ~6-8d
+  }
+
+  return undefined;
+}
+
+let cachedRateLimits: CodexBridgeState["rateLimits"];
+let cachedAt = 0;
+let inFlight: Promise<CodexBridgeState["rateLimits"] | undefined> | undefined;
 
 function decodeJwt(token: string | undefined): Record<string, unknown> | null {
   try {
@@ -72,7 +137,85 @@ function readExpiry(claims: Record<string, unknown> | null): number | undefined 
   return typeof exp === "number" ? exp * 1000 : undefined;
 }
 
-export function probeCodex(): CodexProviderState {
+function slotMaxResetMs(slot: WindowSlot): number {
+  if (slot === "fiveHour") return 6 * 3_600_000; // <= 6h
+  if (slot === "weekly") return 8 * 86_400_000; // ~8d
+  return 0;
+}
+
+function toRateWindow(window: UsageWindow | undefined, slot: WindowSlot): RateWindow | undefined {
+  if (!slot) return undefined;
+  if (!window || typeof window.used_percent !== "number") return undefined;
+  const candidateResetAt = typeof window.reset_at === "number"
+    ? window.reset_at * 1000
+    : typeof window.reset_after_seconds === "number"
+      ? Date.now() + window.reset_after_seconds * 1000
+      : undefined;
+  // The backend occasionally sends a reset from another quota window. Do not
+  // present it as a five-hour reset when it is outside that window's range.
+  const maxResetMs = slotMaxResetMs(slot);
+  const resetAt = candidateResetAt && candidateResetAt > Date.now() && candidateResetAt - Date.now() <= maxResetMs
+    ? candidateResetAt
+    : undefined;
+  return {
+    limit: 100,
+    remaining: Math.max(0, Math.min(100, 100 - window.used_percent)),
+    resetAt,
+    updatedAt: Date.now(),
+  };
+}
+
+function pickWindow(
+  primary: UsageWindow | undefined,
+  secondary: UsageWindow | undefined,
+  slot: WindowSlot,
+): UsageWindow | undefined {
+  if (!slot) return undefined;
+  const primarySlot = classifyWindow(primary);
+  const secondarySlot = classifyWindow(secondary);
+  if (primarySlot === slot && secondarySlot !== slot) return primary;
+  if (secondarySlot === slot && primarySlot !== slot) return secondary;
+  if (primarySlot === slot && secondarySlot === slot) {
+    // Prefer the window whose classification came from limit_window_seconds.
+    const primaryHasDuration = typeof primary?.limit_window_seconds === "number";
+    const secondaryHasDuration = typeof secondary?.limit_window_seconds === "number";
+    if (primaryHasDuration && !secondaryHasDuration) return primary;
+    if (!primaryHasDuration && secondaryHasDuration) return secondary;
+    return primary;
+  }
+  return undefined;
+}
+
+async function fetchRateLimits(accessToken: string, accountId: string | undefined) {
+  const headers: Record<string, string> = { Authorization: `Bearer ${accessToken}` };
+  if (accountId) headers["ChatGPT-Account-Id"] = accountId;
+  const response = await fetchWithTimeout(USAGE_URL, { headers }, FETCH_TIMEOUT_MS);
+  if (!response.ok) throw new Error(`http ${response.status}`);
+  const data = await response.json() as UsageResponse;
+  const primary = data.rate_limit?.primary_window;
+  const secondary = data.rate_limit?.secondary_window;
+  const fiveHour = toRateWindow(pickWindow(primary, secondary, "fiveHour"), "fiveHour");
+  const weekly = toRateWindow(pickWindow(primary, secondary, "weekly"), "weekly");
+  if (!fiveHour && !weekly) throw new Error("quota unavailable");
+  return { fiveHour, weekly };
+}
+
+async function liveRateLimits(accessToken: string, accountId: string | undefined) {
+  if (cachedRateLimits && Date.now() - cachedAt < USAGE_REFRESH_MS) return cachedRateLimits;
+  if (!inFlight) {
+    inFlight = fetchRateLimits(accessToken, accountId)
+      .then((limits) => {
+        cachedRateLimits = limits;
+        cachedAt = Date.now();
+        return limits;
+      })
+      .catch(() => undefined)
+      .finally(() => { inFlight = undefined; });
+  }
+  return inFlight;
+}
+
+export async function probeCodex(): Promise<CodexProviderState> {
   const raw = readJsonFile(CODEX_AUTH_PATH) as CodexStore | null;
   const bridge = readJsonFile(CODEX_STATE_PATH) as CodexBridgeState | null;
   const accessToken = raw?.tokens?.access_token;
@@ -91,7 +234,25 @@ export function probeCodex(): CodexProviderState {
     readAccountId(accessClaims) ||
     "codex";
   const expiresAt = bridge?.expiresAt || readExpiry(accessClaims) || readExpiry(idClaims);
+  const accountIdForHeaders = raw?.tokens?.account_id || readAccountId(idClaims) || readAccountId(accessClaims);
+  const liveLimits = await liveRateLimits(accessToken, accountIdForHeaders);
+  const rateLimits = liveLimits || bridge?.rateLimits;
   const now = Date.now();
+
+  // Record a sample only from a real weekly window observed by this probe.
+  const weeklyUsedPercent =
+    typeof liveLimits?.weekly?.remaining === "number" && typeof liveLimits?.weekly?.limit === "number" && liveLimits.weekly.limit > 0
+      ? (1 - liveLimits.weekly.remaining / liveLimits.weekly.limit) * 100
+      : undefined;
+  const weeklyResetAt = liveLimits?.weekly?.resetAt;
+  if (typeof weeklyUsedPercent === "number" && Number.isFinite(weeklyUsedPercent)) {
+    recordWeeklySample(weeklyUsedPercent, weeklyResetAt, now);
+  }
+  const weeklyProjection =
+    typeof weeklyUsedPercent === "number" && typeof weeklyResetAt === "number"
+      ? projectWeeklyUsage(loadCodexUsageHistory(now), weeklyUsedPercent, weeklyResetAt, now)
+      : undefined;
+
   const warnCutoff = now + CODEX_EXPIRY_WARN_DAYS * 24 * 3_600_000;
   const accounts: CodexAccount[] = [
     {
@@ -101,7 +262,8 @@ export function probeCodex(): CodexProviderState {
       usageCount: undefined,
       authInvalid: false,
       limitStatus: undefined,
-      rateLimits: bridge?.rateLimits,
+      rateLimits,
+      weeklyProjection,
       expiringSoon: typeof expiresAt === "number" && expiresAt <= warnCutoff,
     },
   ];

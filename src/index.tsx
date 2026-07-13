@@ -1,5 +1,7 @@
 /** @jsxImportSource @opentui/solid */
+import type { JSX } from "@opentui/solid";
 import { panelEnabled } from "./lib/panel-enabled";
+import { emitTick } from "./lib/tick";
 import { CodexAccountsPanel } from "./panels/codex";
 import { ClaudeUsagePanel } from "./panels/claude";
 import { CursorUsagePanel } from "./panels/cursor";
@@ -10,27 +12,27 @@ import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
 
 const id = "opencode-codex-accounts-tui";
 
+// Single shared refresh cadence for all AI usage panels.
+const TICK_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 15_000);
+
 const tui: TuiPlugin = async (api) => {
-  // Global safety-net: request a re-render every 2s so the TUI repaints
-  // when panel signals update from their own interval + event listeners.
-  // This is a fallback for when event emissions are sparse or the TUI
-  // render cycle doesn't pick up signal changes on its own.
-  // Safety-net: request repaint every 2s so the TUI picks up
-  // stale panel states even when no session events fire.
-  const renderTimer = setInterval(() => {
-    try { api.renderer.requestRender(); } catch {}
-  }, 2_000);
+  // One shared interval drives all panel polling. Solid repaints reactively.
+  // Panels subscribe to the tick via onTick() from src/lib/tick.ts.
+  const tickTimer = setInterval(() => {
+    emitTick();
+  }, TICK_MS);
+  if (typeof tickTimer.unref === "function") tickTimer.unref();
 
   // Sidebar order: lower renders higher in the panel. Order tuned so the
   // most-used providers (Go, Codex, DeepSeek) cluster at the top; claude and
   // cursor stay opt-in via env vars and appear at the bottom when enabled.
-  const panels: Array<[string, number, () => any]> = [
-    ["OPENCODE_GO", 145, () => <OpenCodeGoPanel api={api} />],
-    ["CODEX",       144, () => <CodexAccountsPanel api={api} />],
-    ["DEEPSEEK",    143, () => <DeepseekUsagePanel api={api} />],
-    ["MINIMAX",     142, () => <MinimaxUsagePanel api={api} />],
-    ["CLAUDE",      141, () => <ClaudeUsagePanel api={api} />],
-    ["CURSOR",      146, () => <CursorUsagePanel api={api} />],
+  const panels: Array<[string, number, () => JSX.Element]> = [
+    ["OPENCODE_GO", 145, () => <OpenCodeGoPanel />],
+    ["CODEX",       144, () => <CodexAccountsPanel />],
+    ["DEEPSEEK",    143, () => <DeepseekUsagePanel />],
+    ["MINIMAX",     142, () => <MinimaxUsagePanel />],
+    ["CLAUDE",      141, () => <ClaudeUsagePanel />],
+    ["CURSOR",      146, () => <CursorUsagePanel />],
   ];
 
   for (const [provider, order, render] of panels) {
@@ -39,7 +41,7 @@ const tui: TuiPlugin = async (api) => {
   }
 
   api.lifecycle?.onDispose?.(() => {
-    clearInterval(renderTimer);
+    clearInterval(tickTimer);
   });
 };
 

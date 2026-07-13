@@ -1,9 +1,9 @@
 /** @jsxImportSource @opentui/solid */
 import { createSignal, onCleanup, createMemo } from "solid-js";
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { onTick } from "../lib/tick.js";
 import { usageColor } from "../lib/format.js";
 
 const MS_PER_HOUR = 3_600_000;
@@ -12,8 +12,8 @@ const USAGE_ENDPOINT =
 const CREDENTIALS_PATH =
   process.env.OPENCODE_CLAUDE_USAGE_CREDENTIALS_PATH ||
   join(homedir(), ".claude/.credentials.json");
-const REFRESH_MS = Number(process.env.OPENCODE_CLAUDE_USAGE_REFRESH_MS || 60_000);
 const REQUEST_TIMEOUT_MS = Number(process.env.OPENCODE_CLAUDE_USAGE_TIMEOUT_MS || 8_000);
+const REFRESH_MS = Number(process.env.OPENCODE_CLAUDE_USAGE_REFRESH_MS || 60_000);
 
 type ClaudeCredentials = {
   claudeAiOauth?: {
@@ -95,22 +95,27 @@ async function fetchUsage(token: string): Promise<ClaudeUsageResponse> {
   return (await response.json()) as ClaudeUsageResponse;
 }
 
-export const ClaudeUsagePanel = (props: { api: TuiPluginApi }) => {
+export const ClaudeUsagePanel = () => {
   const [state, setState] = createSignal<PanelState>({ status: "missing-credentials" });
   let lastGood: PanelState | null = null;
   let transientFailures = 0;
+  let loading = false;
+  let nextRefreshAt = 0;
   const FAILURE_THRESHOLD = 3;
 
   const load = async () => {
-    const creds = readCredentials();
-    const token = creds?.claudeAiOauth?.accessToken;
-    if (!token) {
-      setState({ status: "missing-credentials" });
-      try { props.api.renderer.requestRender(); } catch {}
-      return;
-    }
-
+    if (loading || Date.now() < nextRefreshAt) return;
+    loading = true;
+    nextRefreshAt = Date.now() + REFRESH_MS;
     try {
+      const creds = readCredentials();
+      const token = creds?.claudeAiOauth?.accessToken;
+      if (!token) {
+        setState({ status: "missing-credentials" });
+        return;
+      }
+
+      try {
       const usage = await fetchUsage(token);
       const tier = creds?.claudeAiOauth?.subscriptionType;
       const rateLimitTier = creds?.claudeAiOauth?.rateLimitTier;
@@ -147,23 +152,24 @@ export const ClaudeUsagePanel = (props: { api: TuiPluginApi }) => {
       lastGood = next;
       transientFailures = 0;
       setState(next);
-    } catch (err) {
-      transientFailures++;
-      if (transientFailures < FAILURE_THRESHOLD && lastGood) {
-        setState({ ...lastGood, status: "stale", error: String(err).slice(0, 60) });
-      } else {
-        setState({
-          status: "error",
-          error: err instanceof Error ? err.message : String(err),
-        });
+      } catch (err) {
+        transientFailures++;
+        if (transientFailures < FAILURE_THRESHOLD && lastGood) {
+          setState({ ...lastGood, status: "stale", error: String(err).slice(0, 60) });
+        } else {
+          setState({
+            status: "error",
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
+    } finally {
+      loading = false;
     }
-    try { props.api.renderer.requestRender(); } catch {}
   };
 
   void load();
-  const interval = setInterval(() => void load(), REFRESH_MS);
-  onCleanup(() => clearInterval(interval));
+  onCleanup(onTick(() => void load()));
 
   const view = createMemo(() => {
     const data = state();
@@ -219,5 +225,5 @@ export const ClaudeUsagePanel = (props: { api: TuiPluginApi }) => {
     );
   });
 
-  return view;
+  return view();
 };

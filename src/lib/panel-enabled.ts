@@ -5,6 +5,7 @@
  */
 export const panelEnabled = (provider: string): boolean => {
   const raw = process.env[`OPENCODE_${provider}_USAGE_ENABLED`];
-  if (raw === undefined || raw === "") return true;
+  // Inactive providers stay dormant unless explicitly enabled.
+  if (raw === undefined || raw === "") return provider !== "MINIMAX";
   return !["0", "false", "no", "off"].includes(raw.toLowerCase());
 };

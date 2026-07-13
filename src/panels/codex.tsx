@@ -1,25 +1,21 @@
 /** @jsxImportSource @opentui/solid */
 import { createSignal, onCleanup, createMemo } from "solid-js";
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui";
 import {
   loadState,
   type CodexAccount,
   type CodexProviderState,
   type RateWindow,
 } from "../providers-state.js";
+import { onTick } from "../lib/tick.js";
 import {
   COLOR_OK,
   COLOR_WARN,
   COLOR_DANGER,
   COLOR_MUTED,
   formatDurationHM,
-  formatDurationShort,
-  MS_PER_DAY,
 } from "../lib/format.js";
-
-const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 2_000);
 const STALE_QUOTA_DAYS = 7;
-const STALE_QUOTA_MS = STALE_QUOTA_DAYS * MS_PER_DAY;
+const STALE_QUOTA_MS = STALE_QUOTA_DAYS * 86_400_000;
 const STALE_DATA_MIN = 30;
 const STALE_DATA_MS = STALE_DATA_MIN * 60_000;
 
@@ -36,8 +32,8 @@ function isStaleAccount(account: CodexAccount): boolean {
   return false;
 }
 
-function formatFiveHourReset(window?: RateWindow): string {
-  if (!window?.resetAt) return "?";
+function formatResetLabel(window?: RateWindow, fallback = "reset indisponível"): string {
+  if (!window?.resetAt) return fallback;
   const updatedAt = window.updatedAt;
   if (typeof updatedAt === "number" && Date.now() - updatedAt > STALE_DATA_MS) {
     const ageMs = Date.now() - updatedAt;
@@ -48,6 +44,16 @@ function formatFiveHourReset(window?: RateWindow): string {
     return ageM > 0 ? `stale ${ageH}h${ageM}m` : `stale ${ageH}h`;
   }
   return formatDurationHM(window.resetAt);
+}
+
+function formatWeeklyReset(window?: RateWindow): string {
+  if (!window?.resetAt) return "?";
+  const diff = window.resetAt - Date.now();
+  if (diff <= 0) return "00h";
+  const totalHours = Math.ceil(diff / 3_600_000);
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  return `${days}d ${String(hours).padStart(2, "0")}h`;
 }
 
 function usageRatio(window?: RateWindow): number | null {
@@ -70,25 +76,33 @@ function formatPercent(window?: RateWindow): string {
   return ratio === null ? "?" : `${Math.round(ratio * 100)}%`;
 }
 
-export const CodexAccountsPanel = (props: { api: TuiPluginApi }) => {
+function projectionColor(percent: number): string {
+  if (percent >= 95) return COLOR_DANGER;
+  if (percent >= 80) return COLOR_WARN;
+  return COLOR_OK;
+}
+
+export const CodexAccountsPanel = () => {
   const [codex, setCodex] = createSignal<CodexProviderState | null>(null);
 
   const load = () => {
     const s = loadState();
     if (s) setCodex(s.providers.codex);
-    try { props.api.renderer.requestRender(); } catch {}
   };
   load();
-
-  const interval = setInterval(load, REFRESH_MS);
-  onCleanup(() => clearInterval(interval));
+  onCleanup(onTick(load));
 
   const view = createMemo(() => {
     const state = codex();
     if (!state) return <text> </text>;
-    if (state.status === "empty") return <text> </text>;
+    if (state.status === "empty" || state.status === "disabled") return <text> </text>;
     if (state.status === "ok" && !state.accounts.some((account) => account.rateLimits?.fiveHour || account.rateLimits?.weekly)) {
-      return <text> </text>;
+      return (
+        <box gap={0}>
+          <text><b>Codex</b></text>
+          <text fg={COLOR_MUTED} wrapMode="none">{"  limites indisponíveis"}</text>
+        </box>
+      );
     }
 
     if (state.status === "error") {
@@ -109,9 +123,18 @@ export const CodexAccountsPanel = (props: { api: TuiPluginApi }) => {
       const fiveHour = account.rateLimits?.fiveHour;
       const weekly = account.rateLimits?.weekly;
       if (fiveHour || weekly) {
-        const color = usageColor(fiveHour);
-        const text = `  5h ${formatPercent(fiveHour)} (${formatFiveHourReset(fiveHour)}) · 7d ${formatPercent(weekly)} (${formatDurationShort(weekly?.resetAt)})`;
-        lines.push([color, text]);
+        const color = usageColor(fiveHour ?? weekly);
+        const parts: string[] = [];
+        if (fiveHour) parts.push(`5h ${formatPercent(fiveHour)} (${formatResetLabel(fiveHour)})`);
+        if (weekly) parts.push(`7d ${formatPercent(weekly)} (${formatWeeklyReset(weekly)})`);
+        lines.push([color, `  ${parts.join(" · ")}`]);
+        if (!fiveHour) {
+          if (account.weeklyProjection) {
+            lines.push([projectionColor(account.weeklyProjection.projectedUsedPercent), `  Projeção ${Math.round(account.weeklyProjection.projectedUsedPercent)}%`]);
+          } else {
+            lines.push([COLOR_MUTED, "  coletando ritmo"]);
+          }
+        }
       }
     }
 
@@ -131,5 +154,5 @@ export const CodexAccountsPanel = (props: { api: TuiPluginApi }) => {
     );
   });
 
-  return view;
+  return view();
 };

@@ -5,8 +5,9 @@ in active use, not just Codex.
 
 It writes a unified state file polled from:
 
-- **Codex** — read from the existing `oc-codex-multi-account` store
-  (5h / 7d rate windows, OAuth token expiry, active alias)
+- **Codex** — reads the local OAuth token and calls `/wham/usage`
+  (dynamic 5h / 7d rate windows, OAuth token expiry, active alias, and a
+  conservative weekly usage projection based on 30 days of local history)
 - **DeepSeek** — `GET https://api.deepseek.com/user/balance`
   (USD/CNY balance, granted vs topped-up)
 - **MiniMax** — Token Plan quota endpoint when a `MINIMAX_CODING_PLAN_API_KEY`
@@ -89,8 +90,6 @@ The plugin has three entry points and all of them should be registered:
 ```json
 {
   "plugin": [
-    "oc-codex-multi-account",
-    "/Users/andpeicunha/Apps/opencode-codex-accounts-tui/src/last-session-monitor.ts",
     "/Users/andpeicunha/Apps/opencode-codex-accounts-tui/src/providers-monitor.ts"
   ]
 }
@@ -113,16 +112,24 @@ Optional environment variables:
 | `OPENCODE_PROVIDERS_TUI_COLOR_DANGER` | `#ef4444` | High-usage / error color. |
 | `OPENCODE_PROVIDERS_TUI_COLOR_MUTED` | `#6b7280` | No-data / not-configured color. |
 | `OPENCODE_CODEX_ACCOUNTS_STORE_PATH` | `~/.config/opencode/codex-multi-account-accounts.json` | Codex source file. |
+| `OPENCODE_CODEX_USAGE_HISTORY_PATH` | `~/.config/opencode/codex-usage-history.json` | Local Codex weekly usage sample history. |
 
 ## Notes
 
 - This plugin only reads provider state. It does not manage login, reauth,
   rotation, or token refresh.
-- Use `oc-codex-multi-account status` for the authoritative Codex CLI view.
+- Codex windows are classified dynamically from `limit_window_seconds` or the
+  reset horizon. The probe never assumes primary=5h.
+- Weekly projection is local and conservative: it needs 24 valid incremental
+  rates from same-reset consecutive samples before emitting a number, uses a
+  weekday profile only when 4+ weekdays are covered, falls back to the global
+  rate for days without a profile, and never treats missing samples as zero
+  usage. The projection starts from the live weekly used percent and advances
+  to the live weekly reset.
 - For DeepSeek billing, the panel reflects the live balance; topped-up vs
   granted breakdown is shown when both are non-zero.
 - For MiniMax, the panel detects the first available key in the order
-  `MINIMAX_CHINA_CODING_PLAN_API_KEY` → `MINIMAX_CODING_PLAN_API_KEY` →
+  `MINIMAX_CHINA_CODING_PLAN_API_KEY` -> `MINIMAX_CODING_PLAN_API_KEY` ->
   `MINIMAX_API_KEY`. Token Plan keys expose 5h/weekly windows; the standard
   key shows "pay-per-token" with a note that no live balance endpoint is
   available.

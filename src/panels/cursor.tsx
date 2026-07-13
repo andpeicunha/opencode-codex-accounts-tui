@@ -1,9 +1,9 @@
 /** @jsxImportSource @opentui/solid */
 import { onCleanup, createSignal, createMemo } from "solid-js";
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { onTick } from "../lib/tick.js";
 import { formatDurationShort, formatMoney, usageColor } from "../lib/format.js";
 
 const CURSOR_CACHE_PATH = join(
@@ -13,7 +13,6 @@ const CURSOR_CACHE_PATH = join(
 );
 
 const STALE_THRESHOLD_S = 5 * 60;
-const REFRESH_MS = 30_000;
 
 type CursorUsage = {
   fetched_at?: number;
@@ -34,17 +33,15 @@ function readCache(): CursorUsage | null {
   }
 }
 
-export const CursorUsagePanel = (props: { api: TuiPluginApi }) => {
+export const CursorUsagePanel = () => {
   const [cache, setCache] = createSignal<CursorUsage | null>(null);
 
   const loadCache = () => {
     setCache(readCache());
-    try { props.api.renderer.requestRender(); } catch {}
   };
   loadCache();
 
-  const interval = setInterval(loadCache, REFRESH_MS);
-  onCleanup(() => clearInterval(interval));
+  onCleanup(onTick(loadCache));
 
   const view = createMemo(() => {
     const c = cache();
@@ -77,5 +74,5 @@ export const CursorUsagePanel = (props: { api: TuiPluginApi }) => {
     );
   });
 
-  return view;
+  return view();
 };

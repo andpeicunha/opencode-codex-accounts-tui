@@ -51,6 +51,19 @@ export type RateWindow = {
   updatedAt?: number;
 };
 
+export type CodexWeeklyProjection = {
+  /** Projected used percentage at the next weekly reset, clamped 0-100. */
+  projectedUsedPercent: number;
+  /** Risk band derived from the projected used percentage. */
+  risk: "low" | "medium" | "high";
+  /** How the projection was produced. */
+  method: "global" | "weekday";
+  /** Number of valid incremental rates (same-reset consecutive samples) used. */
+  intervalCount: number;
+  /** Number of distinct days of week (0-6) covered by the observations. */
+  weekdayCoverage: number;
+};
+
 export type CodexAccount = {
   alias: string;
   email?: string;
@@ -62,12 +75,14 @@ export type CodexAccount = {
     fiveHour?: RateWindow;
     weekly?: RateWindow;
   };
+  /** Local, conservative weekly projection for UI consumption. */
+  weeklyProjection?: CodexWeeklyProjection;
   expiringSoon?: boolean;
 };
 
 export type CodexProviderState = {
   type: "subscription";
-  status: "ok" | "error" | "empty";
+  status: "ok" | "error" | "empty" | "disabled";
   activeAlias?: string | null;
   accounts: CodexAccount[];
   error?: string;
@@ -75,7 +90,7 @@ export type CodexProviderState = {
 
 export type DeepSeekProviderState = {
   type: "pay-per-token";
-  status: "ok" | "error" | "missing-key" | "rate-limited";
+  status: "ok" | "error" | "missing-key" | "rate-limited" | "disabled";
   currency?: string;
   totalBalance?: number;
   toppedUpBalance?: number;
@@ -87,7 +102,7 @@ export type DeepSeekProviderState = {
 
 export type OpenCodeGoProviderState = {
   type: "subscription";
-  status: "ok" | "error" | "missing-config";
+  status: "ok" | "error" | "missing-config" | "disabled";
   windows?: {
     rolling?: { usedPct: number; resetInSec: number; resetAt?: number };
     weekly?: { usedPct: number; resetInSec: number; resetAt?: number };
@@ -99,7 +114,7 @@ export type OpenCodeGoProviderState = {
 
 export type MiniMaxProviderState = {
   type: "pay-per-token" | "token-plan";
-  status: "ok" | "error" | "missing-key" | "rate-limited";
+  status: "ok" | "error" | "missing-key" | "rate-limited" | "disabled";
   keySource?: "standard" | "coding-plan" | "china-coding-plan";
   endpoint?: string;
   quota?: {

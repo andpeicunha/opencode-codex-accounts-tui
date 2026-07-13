@@ -1,22 +1,18 @@
 /** @jsxImportSource @opentui/solid */
 import { createSignal, onCleanup, createMemo } from "solid-js";
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui";
 import { loadState, type DeepSeekProviderState } from "../providers-state.js";
+import { onTick } from "../lib/tick.js";
 import { balanceColor } from "../lib/format.js";
 
-const REFRESH_MS = Number(process.env.OPENCODE_PROVIDERS_TUI_REFRESH_MS || 2_000);
-
-export const DeepseekUsagePanel = (props: { api: TuiPluginApi }) => {
+export const DeepseekUsagePanel = () => {
   const [ds, setDs] = createSignal<DeepSeekProviderState | null>(null);
 
   const load = () => {
     setDs(loadState()?.providers?.deepseek ?? null);
-    try { props.api.renderer.requestRender(); } catch {}
   };
   load();
 
-  const interval = setInterval(load, REFRESH_MS);
-  onCleanup(() => clearInterval(interval));
+  onCleanup(onTick(load));
 
   const view = createMemo(() => {
     const state = ds();
@@ -33,5 +29,5 @@ export const DeepseekUsagePanel = (props: { api: TuiPluginApi }) => {
     );
   });
 
-  return view;
+  return view();
 };

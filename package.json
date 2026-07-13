@@ -7,12 +7,13 @@
   "license": "MIT",
   "main": "src/index.tsx",
   "scripts": {
-    "check": "tsc --noEmit"
+    "check": "npm run check:compat && tsc --noEmit",
+    "check:compat": "node bin/check-compat.mjs"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "1.15.11",
-    "@opentui/keymap": "0.2.16",
-    "@opentui/solid": "0.2.16",
+    "@opencode-ai/plugin": "1.17.18",
+    "@opentui/keymap": "0.4.3",
+    "@opentui/solid": "0.4.3",
     "solid-js": "1.9.12"
   },
   "devDependencies": {
