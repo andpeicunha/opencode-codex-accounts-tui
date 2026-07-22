@@ -11,6 +11,7 @@
 import {
   CODEX_AUTH_PATH,
   CODEX_EXPIRY_WARN_DAYS,
+  CODEX_MULTI_ACCOUNT_PATH,
   CODEX_STATE_PATH,
   FETCH_TIMEOUT_MS,
   fetchWithTimeout,
@@ -41,6 +42,21 @@ type CodexBridgeState = {
   lastRefresh?: string;
   updatedAt?: number;
   rateLimits?: { fiveHour?: RateWindow; weekly?: RateWindow };
+};
+
+type MultiAccountEntry = {
+  accessToken?: string;
+  idToken?: string;
+  accountId?: string;
+  email?: string;
+  expiresAt?: number;
+  alias: string;
+  authInvalid?: boolean;
+};
+
+type MultiAccountStore = {
+  accounts?: Record<string, MultiAccountEntry>;
+  activeAlias?: string;
 };
 
 type UsageWindow = {
@@ -97,9 +113,7 @@ function classifyWindow(window: UsageWindow | undefined): WindowSlot {
   return undefined;
 }
 
-let cachedRateLimits: CodexBridgeState["rateLimits"];
-let cachedAt = 0;
-let inFlight: Promise<CodexBridgeState["rateLimits"] | undefined> | undefined;
+const rateLimitCache = new Map<string, { cached: CodexBridgeState["rateLimits"]; cachedAt: number; inFlight?: Promise<CodexBridgeState["rateLimits"] | undefined> }>();
 
 function decodeJwt(token: string | undefined): Record<string, unknown> | null {
   try {
@@ -201,78 +215,139 @@ async function fetchRateLimits(accessToken: string, accountId: string | undefine
   return { fiveHour, weekly };
 }
 
-async function liveRateLimits(accessToken: string, accountId: string | undefined) {
-  if (cachedRateLimits && Date.now() - cachedAt < USAGE_REFRESH_MS) return cachedRateLimits;
-  if (!inFlight) {
-    inFlight = fetchRateLimits(accessToken, accountId)
-      .then((limits) => {
-        cachedRateLimits = limits;
-        cachedAt = Date.now();
-        return limits;
-      })
-      .catch(() => undefined)
-      .finally(() => { inFlight = undefined; });
-  }
-  return inFlight;
+async function liveRateLimits(accessToken: string, accountId: string | undefined, cacheKey: string) {
+  const entry = rateLimitCache.get(cacheKey);
+  if (entry?.cached && Date.now() - entry.cachedAt < USAGE_REFRESH_MS) return entry.cached;
+  if (entry?.inFlight) return entry.inFlight;
+
+  const promise = fetchRateLimits(accessToken, accountId)
+    .then((limits) => {
+      rateLimitCache.set(cacheKey, { cached: limits, cachedAt: Date.now() });
+      return limits;
+    })
+    .catch(() => undefined)
+    .finally(() => {
+      const e = rateLimitCache.get(cacheKey);
+      if (e) e.inFlight = undefined;
+    });
+
+  rateLimitCache.set(cacheKey, { cached: entry?.cached, cachedAt: entry?.cachedAt ?? 0, inFlight: promise });
+  return promise;
 }
 
 export async function probeCodex(): Promise<CodexProviderState> {
-  const raw = readJsonFile(CODEX_AUTH_PATH) as CodexStore | null;
-  const bridge = readJsonFile(CODEX_STATE_PATH) as CodexBridgeState | null;
-  const accessToken = raw?.tokens?.access_token;
-  const idToken = raw?.tokens?.id_token;
-  if (!accessToken || !idToken) {
-    return { type: "subscription", status: "empty", accounts: [] };
+  const multiRaw = readJsonFile(CODEX_MULTI_ACCOUNT_PATH) as MultiAccountStore | null;
+  const hasMulti = multiRaw?.accounts && Object.keys(multiRaw.accounts).length > 0;
+
+  if (!hasMulti) {
+    const raw = readJsonFile(CODEX_AUTH_PATH) as CodexStore | null;
+    const bridge = readJsonFile(CODEX_STATE_PATH) as CodexBridgeState | null;
+    const accessToken = raw?.tokens?.access_token;
+    const idToken = raw?.tokens?.id_token;
+    if (!accessToken || !idToken) {
+      return { type: "subscription", status: "empty", accounts: [] };
+    }
+
+    const accessClaims = decodeJwt(accessToken);
+    const idClaims = decodeJwt(idToken);
+    const email = bridge?.email || readEmail(idClaims) || readEmail(accessClaims);
+    const accountId =
+      bridge?.accountId ||
+      raw?.tokens?.account_id ||
+      readAccountId(idClaims) ||
+      readAccountId(accessClaims) ||
+      "codex";
+    const expiresAt = bridge?.expiresAt || readExpiry(accessClaims) || readExpiry(idClaims);
+    const accountIdForHeaders = raw?.tokens?.account_id || readAccountId(idClaims) || readAccountId(accessClaims);
+    const liveLimits = await liveRateLimits(accessToken, accountIdForHeaders, "codex");
+    const rateLimits = liveLimits || bridge?.rateLimits;
+    const now = Date.now();
+
+    const weeklyUsedPercent =
+      typeof liveLimits?.weekly?.remaining === "number" && typeof liveLimits?.weekly?.limit === "number" && liveLimits.weekly.limit > 0
+        ? (1 - liveLimits.weekly.remaining / liveLimits.weekly.limit) * 100
+        : undefined;
+    const weeklyResetAt = liveLimits?.weekly?.resetAt;
+    if (typeof weeklyUsedPercent === "number" && Number.isFinite(weeklyUsedPercent)) {
+      recordWeeklySample(weeklyUsedPercent, weeklyResetAt, now);
+    }
+    const weeklyProjection =
+      typeof weeklyUsedPercent === "number" && typeof weeklyResetAt === "number"
+        ? projectWeeklyUsage(loadCodexUsageHistory(now), weeklyUsedPercent, weeklyResetAt, now)
+        : undefined;
+
+    const warnCutoff = now + CODEX_EXPIRY_WARN_DAYS * 24 * 3_600_000;
+    const accounts: CodexAccount[] = [
+      {
+        alias: accountId === "codex" ? "codex" : accountId.slice(0, 8),
+        email,
+        expiresAt,
+        usageCount: undefined,
+        authInvalid: false,
+        limitStatus: undefined,
+        rateLimits,
+        weeklyProjection,
+        expiringSoon: typeof expiresAt === "number" && expiresAt <= warnCutoff,
+      },
+    ];
+
+    return {
+      type: "subscription",
+      status: "ok",
+      activeAlias: accounts[0]?.alias ?? null,
+      accounts,
+    };
   }
 
-  const accessClaims = decodeJwt(accessToken);
-  const idClaims = decodeJwt(idToken);
-  const email = bridge?.email || readEmail(idClaims) || readEmail(accessClaims);
-  const accountId =
-    bridge?.accountId ||
-    raw?.tokens?.account_id ||
-    readAccountId(idClaims) ||
-    readAccountId(accessClaims) ||
-    "codex";
-  const expiresAt = bridge?.expiresAt || readExpiry(accessClaims) || readExpiry(idClaims);
-  const accountIdForHeaders = raw?.tokens?.account_id || readAccountId(idClaims) || readAccountId(accessClaims);
-  const liveLimits = await liveRateLimits(accessToken, accountIdForHeaders);
-  const rateLimits = liveLimits || bridge?.rateLimits;
+  const entries = Object.entries(multiRaw!.accounts!);
   const now = Date.now();
-
-  // Record a sample only from a real weekly window observed by this probe.
-  const weeklyUsedPercent =
-    typeof liveLimits?.weekly?.remaining === "number" && typeof liveLimits?.weekly?.limit === "number" && liveLimits.weekly.limit > 0
-      ? (1 - liveLimits.weekly.remaining / liveLimits.weekly.limit) * 100
-      : undefined;
-  const weeklyResetAt = liveLimits?.weekly?.resetAt;
-  if (typeof weeklyUsedPercent === "number" && Number.isFinite(weeklyUsedPercent)) {
-    recordWeeklySample(weeklyUsedPercent, weeklyResetAt, now);
-  }
-  const weeklyProjection =
-    typeof weeklyUsedPercent === "number" && typeof weeklyResetAt === "number"
-      ? projectWeeklyUsage(loadCodexUsageHistory(now), weeklyUsedPercent, weeklyResetAt, now)
-      : undefined;
-
   const warnCutoff = now + CODEX_EXPIRY_WARN_DAYS * 24 * 3_600_000;
-  const accounts: CodexAccount[] = [
-    {
-      alias: accountId === "codex" ? "codex" : accountId.slice(0, 8),
-      email,
-      expiresAt,
+  const accounts: CodexAccount[] = [];
+
+  for (const [alias, entry] of entries) {
+    if (entry.authInvalid) {
+      accounts.push({ alias, email: entry.email, authInvalid: true });
+      continue;
+    }
+    const accessToken = entry.accessToken;
+    if (!accessToken) {
+      accounts.push({ alias, email: entry.email, authInvalid: true });
+      continue;
+    }
+
+    const accountIdForHeaders = entry.accountId;
+    const liveLimits = await liveRateLimits(accessToken, accountIdForHeaders, alias);
+
+    const weeklyUsedPercent =
+      typeof liveLimits?.weekly?.remaining === "number" && typeof liveLimits?.weekly?.limit === "number" && liveLimits.weekly.limit > 0
+        ? (1 - liveLimits.weekly.remaining / liveLimits.weekly.limit) * 100
+        : undefined;
+    const weeklyResetAt = liveLimits?.weekly?.resetAt;
+    if (typeof weeklyUsedPercent === "number" && Number.isFinite(weeklyUsedPercent)) {
+      recordWeeklySample(weeklyUsedPercent, weeklyResetAt, now, alias);
+    }
+    const weeklyProjection =
+      typeof weeklyUsedPercent === "number" && typeof weeklyResetAt === "number"
+        ? projectWeeklyUsage(loadCodexUsageHistory(now, alias), weeklyUsedPercent, weeklyResetAt, now)
+        : undefined;
+
+    accounts.push({
+      alias,
+      email: entry.email,
+      expiresAt: entry.expiresAt,
       usageCount: undefined,
       authInvalid: false,
       limitStatus: undefined,
-      rateLimits,
+      rateLimits: liveLimits || undefined,
       weeklyProjection,
-      expiringSoon: typeof expiresAt === "number" && expiresAt <= warnCutoff,
-    },
-  ];
+      expiringSoon: typeof entry.expiresAt === "number" && entry.expiresAt <= warnCutoff,
+    });
+  }
 
   return {
     type: "subscription",
     status: "ok",
-    activeAlias: accounts[0]?.alias ?? null,
+    activeAlias: multiRaw!.activeAlias ?? accounts[0]?.alias ?? null,
     accounts,
   };
 }

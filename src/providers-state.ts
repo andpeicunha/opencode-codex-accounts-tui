@@ -29,6 +29,11 @@ export const CODEX_STATE_PATH = resolvePath(
   join(homedir(), ".config", "opencode", "codex-oauth-state.json"),
 );
 
+export const CODEX_MULTI_ACCOUNT_PATH = resolvePath(
+  process.env.OPENCODE_CODEX_MULTI_ACCOUNT_PATH,
+  join(homedir(), ".config", "opencode", "codex-multi-account-accounts.json"),
+);
+
 export const OPENCODE_GO_CONFIG_PATH = resolvePath(
   process.env.OPENCODE_OPENCODE_GO_CONFIG_PATH,
   join(homedir(), ".config", "opencode", "opencode-quota", "opencode-go.json"),
@@ -62,6 +67,17 @@ export type CodexWeeklyProjection = {
   intervalCount: number;
   /** Number of distinct days of week (0-6) covered by the observations. */
   weekdayCoverage: number;
+
+  /** Active-pattern projected used percentage, clamped 0-100. */
+  activeProjectedUsedPercent: number;
+  /** Risk band derived from activeProjectedUsedPercent. */
+  activeRisk: "low" | "medium" | "high";
+  /** Estimated daily usage in percentage points, from active median rate × active hours/day. */
+  activeDailyUsedPercent: number;
+  /** Days remaining until the next weekly reset. */
+  activeDaysRemaining: number;
+  /** Number of same-reset intervals with positive delta. */
+  activeIntervalCount: number;
 };
 
 export type CodexAccount = {

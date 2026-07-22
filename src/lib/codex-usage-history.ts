@@ -34,6 +34,8 @@ export type CodexUsageSample = {
   usedPercent: number;
   /** Weekly reset timestamp this sample belongs to, in milliseconds. */
   resetAt?: number;
+  /** Optional account alias for multi-account deduplication. */
+  accountAlias?: string;
 };
 
 export type CodexUsageHistory = {
@@ -84,8 +86,10 @@ export function pruneHistory(
 /**
  * Return the current valid sample list, pruned and sorted oldest-first.
  */
-export function loadCodexUsageHistory(now = Date.now()): CodexUsageSample[] {
-  return pruneHistory(readHistory(), now).samples;
+export function loadCodexUsageHistory(now = Date.now(), accountAlias?: string): CodexUsageSample[] {
+  const allSamples = pruneHistory(readHistory(), now).samples;
+  if (!accountAlias) return allSamples;
+  return allSamples.filter((s) => s.accountAlias === accountAlias);
 }
 
 /**
@@ -108,15 +112,25 @@ function writeHistory(history: CodexUsageHistory): void {
  * @param resetAt - Weekly reset timestamp this sample belongs to, in milliseconds.
  * @param now - Timestamp to record for this observation.
  */
-export function recordWeeklySample(usedPercent: number, resetAt: number | undefined, now = Date.now()): void {
+export function recordWeeklySample(
+  usedPercent: number,
+  resetAt: number | undefined,
+  now = Date.now(),
+  accountAlias?: string,
+): void {
   if (!Number.isFinite(usedPercent)) return;
   const clamped = Math.max(0, Math.min(100, usedPercent));
   const history = pruneHistory(readHistory(), now);
-  const last = history.samples[history.samples.length - 1];
-  if (last && now - last.at < SAMPLE_INTERVAL_MS) return;
+  const lastSameAlias = accountAlias
+    ? [...history.samples].reverse().find((s) => s.accountAlias === accountAlias)
+    : history.samples[history.samples.length - 1];
+  if (lastSameAlias && now - lastSameAlias.at < SAMPLE_INTERVAL_MS) return;
   const sample: CodexUsageSample = { at: now, usedPercent: clamped };
   if (typeof resetAt === "number" && Number.isFinite(resetAt)) {
     sample.resetAt = resetAt;
+  }
+  if (accountAlias) {
+    sample.accountAlias = accountAlias;
   }
   history.samples.push(sample);
   history.updatedAt = now;

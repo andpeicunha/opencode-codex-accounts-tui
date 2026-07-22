@@ -8,7 +8,11 @@
   "main": "src/index.tsx",
   "scripts": {
     "check": "npm run check:compat && tsc --noEmit",
-    "check:compat": "node bin/check-compat.mjs"
+    "check:compat": "node bin/check-compat.mjs",
+    "codex:usage": "node bin/codex-usage.mjs"
+  },
+  "bin": {
+    "codex-usage": "./bin/codex-usage.mjs"
   },
   "dependencies": {
     "@opencode-ai/plugin": "1.17.18",
