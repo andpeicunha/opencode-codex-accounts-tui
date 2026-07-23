@@ -13,20 +13,22 @@ type RateWindow = {
   resetInSec?: number;
 };
 
+type CodexUsageAccount = {
+  alias?: string;
+  stale?: boolean;
+  rateLimitsExpired?: boolean;
+  rateLimits?: {
+    fiveHour?: RateWindow;
+    weekly?: RateWindow;
+  };
+};
+
 type CodexState = {
   updatedAt?: number;
   providers?: {
     codex?: {
       activeAlias?: string | null;
-      accounts?: Array<{
-        alias?: string;
-        stale?: boolean;
-        rateLimitsExpired?: boolean;
-        rateLimits?: {
-          fiveHour?: RateWindow;
-          weekly?: RateWindow;
-        };
-      }>;
+      accounts?: CodexUsageAccount[];
     };
     deepseek?: {
       status?: string;
@@ -46,6 +48,16 @@ type AssistantMessage = {
 const STATE_PATH = resolvePath(
   process.env.OPENCODE_PROVIDERS_STATE_PATH,
   join(homedir(), ".config", "opencode", "providers-state.json"),
+);
+
+const CODEX_MULTI_ACCOUNT_PATH = resolvePath(
+  process.env.OPENCODE_CODEX_MULTI_ACCOUNT_PATH,
+  join(homedir(), ".config", "opencode", "codex-multi-account-accounts.json"),
+);
+
+const CODEX_BRIDGE_STATE_PATH = resolvePath(
+  process.env.OPENCODE_CODEX_STATE_PATH,
+  join(homedir(), ".config", "opencode", "codex-oauth-state.json"),
 );
 
 const TOKENS_DB_PATH = join(
@@ -97,6 +109,40 @@ function resolvePath(value: string | undefined, fallback: string): string {
 function pctFromRemaining(window?: RateWindow): number | null {
   if (!window || typeof window.limit !== "number" || typeof window.remaining !== "number" || window.limit <= 0) return null;
   return Math.max(0, Math.min(100, Math.round((1 - window.remaining / window.limit) * 100)));
+}
+
+function hasWeeklyRateLimit(account: CodexUsageAccount | undefined): boolean {
+  const weekly = account?.rateLimits?.weekly;
+  return !!weekly && typeof weekly.limit === "number" && typeof weekly.remaining === "number" && weekly.limit > 0;
+}
+
+function readJson(path: string): unknown {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function fallbackCodexAccounts(): { activeAlias?: string | null; accounts: CodexUsageAccount[] } {
+  const multi = readJson(CODEX_MULTI_ACCOUNT_PATH) as {
+    activeAlias?: string | null;
+    accounts?: Record<string, CodexUsageAccount & { alias?: string }>;
+  } | null;
+  if (multi?.accounts && typeof multi.accounts === "object") {
+    return {
+      activeAlias: multi.activeAlias ?? null,
+      accounts: Object.entries(multi.accounts)
+        .map(([alias, account]) => ({ alias: account.alias ?? alias, rateLimits: account.rateLimits, stale: true }))
+        .filter(hasWeeklyRateLimit),
+    };
+  }
+
+  const bridge = readJson(CODEX_BRIDGE_STATE_PATH) as (CodexUsageAccount & { accountId?: string }) | null;
+  const account: CodexUsageAccount | undefined = bridge?.rateLimits
+    ? { alias: bridge.accountId?.slice(0, 8) ?? "codex", rateLimits: bridge.rateLimits, stale: true }
+    : undefined;
+  return { activeAlias: account?.alias ?? null, accounts: account && hasWeeklyRateLimit(account) ? [account] : [] };
 }
 
 function bar(pct: number | null): string {
@@ -236,8 +282,24 @@ function snapshotCodexUsage(): string {
 
 function buildToastMessage(state: CodexState): string | null {
   const codex = state.providers?.codex;
-  const accounts = codex?.accounts ?? [];
-  const activeAlias = codex?.activeAlias ?? null;
+  let accounts = codex?.accounts ?? [];
+  let activeAlias = codex?.activeAlias ?? null;
+  let stateForProjection = state;
+
+  if (!accounts.some(hasWeeklyRateLimit)) {
+    const fallback = fallbackCodexAccounts();
+    if (fallback.accounts.length > 0) {
+      accounts = fallback.accounts;
+      activeAlias = fallback.activeAlias ?? activeAlias;
+      stateForProjection = {
+        ...state,
+        providers: {
+          ...state.providers,
+          codex: { activeAlias, accounts },
+        },
+      };
+    }
+  }
 
   const lines: string[] = [];
   let hasCodex = false;
@@ -275,7 +337,7 @@ function buildToastMessage(state: CodexState): string | null {
   const dsBalance = typeof deepseek?.totalBalance === "number" ? `US$ ${deepseek.totalBalance.toFixed(2)}` : "sem dado";
   lines.push(`DEEPSEEK:`.padEnd(LABEL_WIDTH) + ` ${dsBalance}`);
 
-  const projection = buildProjectionSection(state);
+  const projection = buildProjectionSection(stateForProjection);
   if (projection) {
     lines.push("──");
     lines.push(projection);
