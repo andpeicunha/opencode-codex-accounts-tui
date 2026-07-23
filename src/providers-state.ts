@@ -94,6 +94,10 @@ export type CodexAccount = {
   /** Local, conservative weekly projection for UI consumption. */
   weeklyProjection?: CodexWeeklyProjection;
   expiringSoon?: boolean;
+  /** True when rateLimits came from a cached/fallback source after live fetch failed. */
+  stale?: boolean;
+  /** True when the last valid rate-limit cache expired after repeated failures. */
+  rateLimitsExpired?: boolean;
 };
 
 export type CodexProviderState = {

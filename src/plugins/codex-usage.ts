@@ -20,6 +20,8 @@ type CodexState = {
       activeAlias?: string | null;
       accounts?: Array<{
         alias?: string;
+        stale?: boolean;
+        rateLimitsExpired?: boolean;
         rateLimits?: {
           fiveHour?: RateWindow;
           weekly?: RateWindow;
@@ -59,7 +61,8 @@ const DS_FLASH_RATES: DSRates = { input: 0.14, output: 0.28, cache_read: 0.0028,
 const DS_PRO_RATES: DSRates = { input: 0.435, output: 0.87, cache_read: 0.003625, cache_write: 0.435, reasoning: 0.87 };
 
 const STALE_AFTER_MS = 10 * 60_000;
-const BAR_WIDTH = 13;
+const BAR_WIDTH = 10;
+const LABEL_WIDTH = 17;
 const SEPARATOR = "═".repeat(62);
 const COMMANDS = ["usage", "compare"] as const;
 
@@ -99,7 +102,7 @@ function pctFromRemaining(window?: RateWindow): number | null {
 function bar(pct: number | null): string {
   const clamped = pct === null ? 0 : Math.max(0, Math.min(100, pct));
   const filled = Math.round((clamped / 100) * BAR_WIDTH);
-  return "=".repeat(filled) + "-".repeat(BAR_WIDTH - filled);
+  return "\u2588".repeat(filled) + "\u2591".repeat(BAR_WIDTH - filled);
 }
 
 function fmtWindowReset(window?: RateWindow): string {
@@ -199,19 +202,19 @@ function colorize(text: string, color: string): string {
 function formatDeepSeekBalance(deepseek?: NonNullable<CodexState["providers"]>["deepseek"]): string {
   const currency = deepseek?.currency ?? "USD";
   if (deepseek?.status === "missing-key") {
-    return `  ${colorize("DS", ANSI.cyan)}  ${colorize("chave ausente", ANSI.red)}`;
+    return `  ${colorize("DEEPSEEK", ANSI.cyan)}  ${colorize("chave ausente", ANSI.red)}`;
   }
   if (deepseek?.status === "rate-limited") {
-    return `  ${colorize("DS", ANSI.cyan)}  ${colorize("rate-limited", ANSI.red)}`;
+    return `  ${colorize("DEEPSEEK", ANSI.cyan)}  ${colorize("rate-limited", ANSI.red)}`;
   }
   if (deepseek?.isAvailable === false) {
-    return `  ${colorize("DS", ANSI.cyan)}  ${colorize("indisponível", ANSI.red)}`;
+    return `  ${colorize("DEEPSEEK", ANSI.cyan)}  ${colorize("indisponível", ANSI.red)}`;
   }
   if (typeof deepseek?.totalBalance !== "number") {
-    return `  ${colorize("DS", ANSI.cyan)}  ${colorize("sem saldo/dado", ANSI.yellow)}`;
+    return `  ${colorize("DEEPSEEK", ANSI.cyan)}  ${colorize("sem saldo/dado", ANSI.yellow)}`;
   }
   const balanceColor = deepseek.totalBalance < 1 ? ANSI.red : deepseek.totalBalance < 3 ? ANSI.yellow : ANSI.green;
-  return `  ${colorize("DS", ANSI.cyan)}  ${colorize(deepseek.totalBalance.toFixed(2), balanceColor)} ${currency}  ${colorize(deepseek.status === "ok" ? "disponível" : deepseek.status ?? "", balanceColor)}`;
+  return `  ${colorize("DEEPSEEK", ANSI.cyan)}  ${colorize(deepseek.totalBalance.toFixed(2), balanceColor)} ${currency}  ${colorize(deepseek.status === "ok" ? "disponível" : deepseek.status ?? "", balanceColor)}`;
 }
 
 function readState(): CodexState | null {
@@ -234,19 +237,34 @@ function snapshotCodexUsage(): string {
 function buildToastMessage(state: CodexState): string | null {
   const codex = state.providers?.codex;
   const accounts = codex?.accounts ?? [];
+  const activeAlias = codex?.activeAlias ?? null;
 
   const lines: string[] = [];
   let hasCodex = false;
 
   if (accounts.length > 0) {
     for (const account of accounts) {
+      const alias = account?.alias ?? "?";
+      const activeMarker = alias === activeAlias ? " ⬅" : "";
+      const label = alias === "andrepeixoto" ? "CODEX PER 7d:" : alias === "work" ? "CODEX WOR 7d:" : `CODEX ${alias} 7d:`;
+
       const weekly = account?.rateLimits?.weekly;
+      if (!weekly && account?.stale) {
+        hasCodex = true;
+        lines.push(`${label.padEnd(LABEL_WIDTH)} (dados desatualizados)${activeMarker}`);
+        continue;
+      }
+
+      if (!weekly && account?.rateLimitsExpired) {
+        hasCodex = true;
+        lines.push(`${label.padEnd(LABEL_WIDTH)} (dados indisponíveis)${activeMarker}`);
+        continue;
+      }
+
       if (!weekly || typeof weekly.limit !== "number" || typeof weekly.remaining !== "number" || weekly.limit <= 0) continue;
       hasCodex = true;
       const pct = Math.round(((weekly.limit - weekly.remaining) / weekly.limit) * 100);
-      const alias = account?.alias ?? "?";
-      const label = alias === "andrepeixoto" ? "CODEX PER 7d" : alias === "work" ? "CODEX WOR 7d" : `CODEX ${alias} 7d`;
-      lines.push(formatUsageLine(label, pct, weekly));
+      lines.push(formatUsageLine(label, pct, weekly) + activeMarker);
     }
   }
   if (!hasCodex) {
@@ -254,8 +272,8 @@ function buildToastMessage(state: CodexState): string | null {
   }
 
   const deepseek = state.providers?.deepseek;
-  const dsText = typeof deepseek?.totalBalance === "number" ? `US$ ${deepseek.totalBalance.toFixed(2)}` : "sem dado";
-  lines.push(`DS  ${dsText}`);
+  const dsBalance = typeof deepseek?.totalBalance === "number" ? `US$ ${deepseek.totalBalance.toFixed(2)}` : "sem dado";
+  lines.push(`DEEPSEEK:`.padEnd(LABEL_WIDTH) + ` ${dsBalance}`);
 
   const projection = buildProjectionSection(state);
   if (projection) {
@@ -268,7 +286,7 @@ function buildToastMessage(state: CodexState): string | null {
 
 function formatUsageLine(label: string, pct: number | null, window?: RateWindow): string {
   const pctText = pct === null ? " ?%" : `${String(Math.round(pct)).padStart(3)}%`;
-  return `${label.padEnd(14)} ${pctText} [${bar(pct)}] ${fmtWindowReset(window)}`;
+  return `${label.padEnd(LABEL_WIDTH)} ${pctText} ${bar(pct)} ${fmtWindowReset(window)}`;
 }
 
 function fmtDaysHoursFromDays(days: number): string {
@@ -344,7 +362,7 @@ function buildProjectionSection(state: CodexState): string | null {
   const risk = projectedAggPct >= 95 ? "high" : projectedAggPct >= 80 ? "medium" : "low";
   const riskIcon = risk === "high" ? "🟥" : risk === "medium" ? "🟨" : "🟩";
 
-  return `CODEX:        ~${Math.round(combinedDailyPct)}%/dia → ~${Math.round(projectedAggPct)}% ${riskIcon}`;
+  return `${"CODEX:".padEnd(LABEL_WIDTH)} ~${Math.round(combinedDailyPct)}%/dia → ~${Math.round(projectedAggPct)}% ${riskIcon}`;
 }
 
 async function showUsageToast(client: Parameters<Plugin>[0]["client"]): Promise<void> {

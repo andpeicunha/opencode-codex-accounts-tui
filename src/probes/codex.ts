@@ -25,6 +25,8 @@ import { projectWeeklyUsage } from "../lib/codex-projection.js";
 
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const USAGE_REFRESH_MS = 60_000;
+/** Max time to preserve the last valid rateLimits result after the last successful fetch. */
+const RATE_LIMIT_CACHE_TTL_MS = 5 * 60_000;
 
 type CodexStore = {
   tokens?: {
@@ -113,7 +115,17 @@ function classifyWindow(window: UsageWindow | undefined): WindowSlot {
   return undefined;
 }
 
-const rateLimitCache = new Map<string, { cached: CodexBridgeState["rateLimits"]; cachedAt: number; inFlight?: Promise<CodexBridgeState["rateLimits"] | undefined> }>();
+type LiveRateLimitsResult = {
+  rateLimits?: NonNullable<CodexBridgeState["rateLimits"]>;
+  stale: boolean;
+  expired?: boolean;
+};
+
+const rateLimitCache = new Map<string, {
+  rateLimits?: CodexBridgeState["rateLimits"];
+  cachedAt: number;
+  inFlight?: Promise<LiveRateLimitsResult | undefined>;
+}>();
 
 function decodeJwt(token: string | undefined): Record<string, unknown> | null {
   try {
@@ -215,23 +227,42 @@ async function fetchRateLimits(accessToken: string, accountId: string | undefine
   return { fiveHour, weekly };
 }
 
-async function liveRateLimits(accessToken: string, accountId: string | undefined, cacheKey: string) {
+async function liveRateLimits(
+  accessToken: string,
+  accountId: string | undefined,
+  cacheKey: string,
+): Promise<LiveRateLimitsResult | undefined> {
   const entry = rateLimitCache.get(cacheKey);
-  if (entry?.cached && Date.now() - entry.cachedAt < USAGE_REFRESH_MS) return entry.cached;
+
+  if (entry?.rateLimits && Date.now() - entry.cachedAt < USAGE_REFRESH_MS) {
+    return { rateLimits: entry.rateLimits, stale: false };
+  }
+
   if (entry?.inFlight) return entry.inFlight;
 
-  const promise = fetchRateLimits(accessToken, accountId)
+  const promise: Promise<LiveRateLimitsResult | undefined> = fetchRateLimits(accessToken, accountId)
     .then((limits) => {
-      rateLimitCache.set(cacheKey, { cached: limits, cachedAt: Date.now() });
-      return limits;
+      rateLimitCache.set(cacheKey, { rateLimits: limits, cachedAt: Date.now() });
+      return { rateLimits: limits, stale: false };
     })
-    .catch(() => undefined)
+    .catch(() => {
+      const cached = rateLimitCache.get(cacheKey);
+      if (cached?.rateLimits && Date.now() - cached.cachedAt < RATE_LIMIT_CACHE_TTL_MS) {
+        return { rateLimits: cached.rateLimits, stale: true };
+      }
+      if (cached?.rateLimits) return { stale: false, expired: true };
+      return undefined;
+    })
     .finally(() => {
       const e = rateLimitCache.get(cacheKey);
       if (e) e.inFlight = undefined;
     });
 
-  rateLimitCache.set(cacheKey, { cached: entry?.cached, cachedAt: entry?.cachedAt ?? 0, inFlight: promise });
+  rateLimitCache.set(cacheKey, {
+    rateLimits: entry?.rateLimits,
+    cachedAt: entry?.cachedAt ?? 0,
+    inFlight: promise,
+  });
   return promise;
 }
 
@@ -259,15 +290,18 @@ export async function probeCodex(): Promise<CodexProviderState> {
       "codex";
     const expiresAt = bridge?.expiresAt || readExpiry(accessClaims) || readExpiry(idClaims);
     const accountIdForHeaders = raw?.tokens?.account_id || readAccountId(idClaims) || readAccountId(accessClaims);
-    const liveLimits = await liveRateLimits(accessToken, accountIdForHeaders, "codex");
+    const liveResult = await liveRateLimits(accessToken, accountIdForHeaders, "codex");
+    const liveLimits = liveResult?.rateLimits;
     const rateLimits = liveLimits || bridge?.rateLimits;
+    const stale = liveResult ? (liveResult.stale ?? false) : (!!rateLimits);
+    const rateLimitsExpired = liveResult?.expired ?? false;
     const now = Date.now();
 
     const weeklyUsedPercent =
-      typeof liveLimits?.weekly?.remaining === "number" && typeof liveLimits?.weekly?.limit === "number" && liveLimits.weekly.limit > 0
-        ? (1 - liveLimits.weekly.remaining / liveLimits.weekly.limit) * 100
+      typeof rateLimits?.weekly?.remaining === "number" && typeof rateLimits?.weekly?.limit === "number" && rateLimits.weekly.limit > 0
+        ? (1 - rateLimits.weekly.remaining / rateLimits.weekly.limit) * 100
         : undefined;
-    const weeklyResetAt = liveLimits?.weekly?.resetAt;
+    const weeklyResetAt = rateLimits?.weekly?.resetAt;
     if (typeof weeklyUsedPercent === "number" && Number.isFinite(weeklyUsedPercent)) {
       recordWeeklySample(weeklyUsedPercent, weeklyResetAt, now);
     }
@@ -288,6 +322,8 @@ export async function probeCodex(): Promise<CodexProviderState> {
         rateLimits,
         weeklyProjection,
         expiringSoon: typeof expiresAt === "number" && expiresAt <= warnCutoff,
+        stale,
+        rateLimitsExpired,
       },
     ];
 
@@ -316,13 +352,17 @@ export async function probeCodex(): Promise<CodexProviderState> {
     }
 
     const accountIdForHeaders = entry.accountId;
-    const liveLimits = await liveRateLimits(accessToken, accountIdForHeaders, alias);
+    const liveResult = await liveRateLimits(accessToken, accountIdForHeaders, alias);
+    const liveLimits = liveResult?.rateLimits;
+    const rateLimits = liveLimits || (entry as Record<string, unknown>).rateLimits as CodexBridgeState["rateLimits"];
+    const stale = liveResult ? (liveResult.stale ?? false) : (!!rateLimits);
+    const rateLimitsExpired = liveResult?.expired ?? false;
 
     const weeklyUsedPercent =
-      typeof liveLimits?.weekly?.remaining === "number" && typeof liveLimits?.weekly?.limit === "number" && liveLimits.weekly.limit > 0
-        ? (1 - liveLimits.weekly.remaining / liveLimits.weekly.limit) * 100
+      typeof rateLimits?.weekly?.remaining === "number" && typeof rateLimits?.weekly?.limit === "number" && rateLimits.weekly.limit > 0
+        ? (1 - rateLimits.weekly.remaining / rateLimits.weekly.limit) * 100
         : undefined;
-    const weeklyResetAt = liveLimits?.weekly?.resetAt;
+    const weeklyResetAt = rateLimits?.weekly?.resetAt;
     if (typeof weeklyUsedPercent === "number" && Number.isFinite(weeklyUsedPercent)) {
       recordWeeklySample(weeklyUsedPercent, weeklyResetAt, now, alias);
     }
@@ -338,9 +378,11 @@ export async function probeCodex(): Promise<CodexProviderState> {
       usageCount: undefined,
       authInvalid: false,
       limitStatus: undefined,
-      rateLimits: liveLimits || undefined,
+      rateLimits,
       weeklyProjection,
       expiringSoon: typeof entry.expiresAt === "number" && entry.expiresAt <= warnCutoff,
+      stale,
+      rateLimitsExpired,
     });
   }
 
