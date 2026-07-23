@@ -74,6 +74,7 @@ const DS_PRO_RATES: DSRates = { input: 0.435, output: 0.87, cache_read: 0.003625
 
 const STALE_AFTER_MS = 10 * 60_000;
 const BAR_WIDTH = 10;
+const ACCOUNT_LABEL_WIDTH = 16;
 const LABEL_WIDTH = 17;
 const SEPARATOR = "═".repeat(62);
 const COMMANDS = ["usage", "compare"] as const;
@@ -313,13 +314,13 @@ function buildToastMessage(state: CodexState): string | null {
       const weekly = account?.rateLimits?.weekly;
       if (!weekly && account?.stale) {
         hasCodex = true;
-        lines.push(`${label.padEnd(LABEL_WIDTH)} (dados desatualizados)${activeMarker}`);
+        lines.push(`${label.padEnd(ACCOUNT_LABEL_WIDTH)} (dados desatualizados)${activeMarker}`);
         continue;
       }
 
       if (!weekly && account?.rateLimitsExpired) {
         hasCodex = true;
-        lines.push(`${label.padEnd(LABEL_WIDTH)} (dados indisponíveis)${activeMarker}`);
+        lines.push(`${label.padEnd(ACCOUNT_LABEL_WIDTH)} (dados indisponíveis)${activeMarker}`);
         continue;
       }
 
@@ -348,7 +349,7 @@ function buildToastMessage(state: CodexState): string | null {
 
 function formatUsageLine(label: string, pct: number | null, window?: RateWindow): string {
   const pctText = pct === null ? " ?%" : `${String(Math.round(pct)).padStart(3)}%`;
-  return `${label.padEnd(LABEL_WIDTH)} ${pctText} ${bar(pct)} ${fmtWindowReset(window)}`;
+  return `${label.padEnd(ACCOUNT_LABEL_WIDTH)} ${pctText} ${bar(pct)} ${fmtWindowReset(window)}`;
 }
 
 function fmtDaysHoursFromDays(days: number): string {
