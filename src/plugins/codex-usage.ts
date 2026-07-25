@@ -422,10 +422,9 @@ function buildProjectionSection(state: CodexState): string | null {
   const currentAggPct = (totalUsed / totalCapacity) * 100;
   const projectedAggPct = Math.max(0, currentAggPct + combinedDailyPct * daysUntilReset);
 
-  const risk = projectedAggPct >= 95 ? "high" : projectedAggPct >= 80 ? "medium" : "low";
-  const riskIcon = risk === "high" ? "🟥" : risk === "medium" ? "🟨" : "🟩";
-
-  return `${"CODEX:".padEnd(LABEL_WIDTH)} ~${Math.round(combinedDailyPct)}%/dia → ~${Math.round(projectedAggPct)}% ${riskIcon}`;
+  const timeToLimit = fmtCodexTimeToLimit(currentAggPct, combinedDailyPct);
+  const timePart = timeToLimit ? ` → ${timeToLimit} |` : " |";
+  return `${"CODEX:".padEnd(LABEL_WIDTH)} ~${Math.round(combinedDailyPct)}%/dia${timePart} ~${Math.round(projectedAggPct)}%`;
 }
 
 async function showUsageToast(client: Parameters<Plugin>[0]["client"]): Promise<void> {
