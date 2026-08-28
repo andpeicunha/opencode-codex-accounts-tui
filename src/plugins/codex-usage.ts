@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -63,6 +63,11 @@ const CODEX_BRIDGE_STATE_PATH = resolvePath(
 const TOKENS_DB_PATH = join(
   homedir(),
   ".local/share/opencode/oh-my-tokens/oh-my-tokens.db",
+);
+
+const USAGE_CHANGE_MARKERS_PATH = resolvePath(
+  process.env.OPENCODE_USAGE_CHANGE_MARKERS_PATH,
+  join(homedir(), ".config", "opencode", "usage-change-markers.json"),
 );
 
 type DSRates = {
@@ -369,6 +374,19 @@ function fmtCodexTimeToLimit(currentUsedPercent: number, dailyUsedPercent: numbe
   return fmtDaysHoursFromDays(daysToLimit);
 }
 
+function fmtCodexUsableTimeToLimit(remainingCapacity: number, dailyUsedCapacity: number): string | null {
+  if (!Number.isFinite(remainingCapacity) || !Number.isFinite(dailyUsedCapacity) || dailyUsedCapacity <= 0) {
+    return null;
+  }
+  if (remainingCapacity <= 0) return "0h";
+  return fmtDaysHoursFromDays(remainingCapacity / dailyUsedCapacity);
+}
+
+function loadCodexProjectionSamples(now: number, accountAlias?: string) {
+  if (accountAlias) return loadCodexUsageHistory(now, accountAlias);
+  return loadCodexUsageHistory(now).filter((sample) => !sample.accountAlias);
+}
+
 function buildProjectionSection(state: CodexState): string | null {
   const codex = state.providers?.codex;
   const accounts = codex?.accounts ?? [];
@@ -378,7 +396,10 @@ function buildProjectionSection(state: CodexState): string | null {
   let totalCapacity = 0;
   let totalUsed = 0;
   let sumDailyAbsolute = 0;
-  let earliestReset: number | null = null;
+  let sumProjectedAbsolute = 0;
+  let usableRemainingCapacity = 0;
+  let usableDailyAbsolute = 0;
+  let hasUsableCapacity = false;
   let hasAnyProjection = false;
 
   for (const account of accounts) {
@@ -388,41 +409,39 @@ function buildProjectionSection(state: CodexState): string | null {
     const used = weekly.limit - weekly.remaining;
     totalCapacity += weekly.limit;
     totalUsed += used;
-    if (earliestReset === null || weekly.resetAt < earliestReset) {
-      earliestReset = weekly.resetAt;
-    }
 
     const currentPct = (used / weekly.limit) * 100;
     const alias = account?.alias;
 
-    const samples = loadCodexUsageHistory(now, alias);
-    let projection = projectWeeklyUsage(samples, currentPct, weekly.resetAt, now);
-
-    // Legacy fallback: only for andrepeixoto — reuse old samples without
-    // accountAlias when the alias-filtered history is insufficient for a
-    // projection (e.g. too few samples to derive enough incremental rates).
-    if (!projection && alias === "andrepeixoto") {
-      const allSamples = loadCodexUsageHistory(now);
-      const legacy = allSamples.filter((s) => !s.accountAlias);
-      if (legacy.length > 0) {
-        projection = projectWeeklyUsage(legacy, currentPct, weekly.resetAt, now);
-      }
-    }
+    const samples = loadCodexProjectionSamples(now, alias);
+    const projection = projectWeeklyUsage(samples, currentPct, weekly.resetAt, now);
 
     if (projection) {
       hasAnyProjection = true;
-      sumDailyAbsolute += (projection.activeDailyUsedPercent / 100) * weekly.limit;
+      const dailyAbsolute = (projection.activeDailyUsedPercent / 100) * weekly.limit;
+      sumDailyAbsolute += dailyAbsolute;
+      sumProjectedAbsolute += (projection.activeProjectedUsedPercent / 100) * weekly.limit;
+
+      // The summary time answers "how much usable Codex time is left now?".
+      // Fully exhausted accounts cannot contribute remaining capacity, so do
+      // not dilute a 3%-remaining account across already-saturated accounts.
+      if (weekly.remaining > 0) {
+        hasUsableCapacity = true;
+        usableRemainingCapacity += weekly.remaining;
+        usableDailyAbsolute += dailyAbsolute;
+      }
     }
   }
 
   if (totalCapacity <= 0 || !hasAnyProjection) return null;
 
   const combinedDailyPct = (sumDailyAbsolute / totalCapacity) * 100;
-  const daysUntilReset = earliestReset ? Math.max(0, (earliestReset - now) / (24 * 60 * 60 * 1000)) : 0;
   const currentAggPct = (totalUsed / totalCapacity) * 100;
-  const projectedAggPct = Math.max(0, currentAggPct + combinedDailyPct * daysUntilReset);
+  const projectedAggPct = Math.max(0, Math.min(100, (sumProjectedAbsolute / totalCapacity) * 100));
 
-  const timeToLimit = fmtCodexTimeToLimit(currentAggPct, combinedDailyPct);
+  const timeToLimit = hasUsableCapacity
+    ? fmtCodexUsableTimeToLimit(usableRemainingCapacity, usableDailyAbsolute)
+    : fmtCodexTimeToLimit(currentAggPct, combinedDailyPct);
   const timePart = timeToLimit ? ` → ${timeToLimit} |` : " |";
   return `${"CODEX:".padEnd(LABEL_WIDTH)} ~${Math.round(combinedDailyPct)}%/dia${timePart} ~${Math.round(projectedAggPct)}%`;
 }
@@ -488,6 +507,8 @@ function fmtProvider(provider: string): string {
 }
 
 type TokenRow = { provider: string; inp: number; out: number; cache_r: number; cache_w: number; reasoning: number; cost: number };
+type DcpMetricRow = { bucket: "before" | "after"; total: number; inp: number; out: number; reasoning: number; cache_r: number; cache_w: number; events: number; sessions: number };
+type DcpModelRow = DcpMetricRow & { model: string };
 
 function queryTokens(sql: string, days: number): TokenRow[] {
   try {
@@ -565,7 +586,7 @@ function buildCompareMessage(days: number): string {
   const weekly = account?.rateLimits?.weekly;
   if (weekly && typeof weekly.limit === "number" && typeof weekly.remaining === "number" && weekly.limit > 0 && weekly.resetAt) {
     const currentPct = (1 - weekly.remaining / weekly.limit) * 100;
-    const samples = loadCodexUsageHistory();
+    const samples = loadCodexProjectionSamples(Date.now(), account?.alias);
     const projection = projectWeeklyUsage(samples, currentPct, weekly.resetAt);
 
     if (projection) {
@@ -593,6 +614,163 @@ function buildCompareMessage(days: number): string {
   return lines.join("\n");
 }
 
+function parseMarkerTimestamp(value: unknown): number | null {
+  const raw = typeof value === "object" && value !== null
+    ? (value as { ts?: unknown; timestamp?: unknown; at?: unknown; time?: unknown }).ts
+      ?? (value as { timestamp?: unknown }).timestamp
+      ?? (value as { at?: unknown }).at
+      ?? (value as { time?: unknown }).time
+    : value;
+  const parsed = typeof raw === "number" ? raw : typeof raw === "string" && raw.trim() ? Number(raw) : NaN;
+  if (Number.isFinite(parsed) && parsed > 0) return parsed < 1_000_000_000_000 ? parsed * 1000 : parsed;
+  if (typeof raw === "string") {
+    const date = Date.parse(raw);
+    if (Number.isFinite(date)) return date;
+  }
+  return null;
+}
+
+function readDcpMarker(): number | null {
+  const markers = readJson(USAGE_CHANGE_MARKERS_PATH) as { dcp_v1?: unknown; markers?: { id?: unknown; at?: unknown }[] } | null;
+  const dcpMarker = Array.isArray(markers?.markers)
+    ? markers.markers.find((marker) => marker?.id === "dcp_v1")
+    : undefined;
+  const markerTs = parseMarkerTimestamp(dcpMarker?.at);
+  if (markerTs !== null) return markerTs;
+  return parseMarkerTimestamp(markers?.dcp_v1);
+}
+
+function queryDcpTokens(markerTs: number): { totals: DcpMetricRow[]; models: DcpModelRow[] } {
+  const base = `WITH session_bounds AS (
+      SELECT sid, MIN(ts) AS first_ts, MAX(ts) AS last_ts FROM events GROUP BY sid
+    ), clean_events AS (
+      SELECT e.*,
+        CASE WHEN e.ts < ?1 AND s.last_ts < ?1 THEN 'before'
+             WHEN e.ts > ?1 AND s.first_ts > ?1 THEN 'after'
+        END AS bucket
+      FROM events e JOIN session_bounds s ON s.sid = e.sid
+      WHERE (e.ts < ?1 AND s.last_ts < ?1) OR (e.ts > ?1 AND s.first_ts > ?1)
+    )`;
+  const totalsSql = `${base}
+    SELECT bucket,
+      COALESCE(SUM(CASE WHEN total > 0 THEN total ELSE inp + out + reasoning + cache_r + cache_w END), 0) AS total,
+      COALESCE(SUM(inp), 0) AS inp,
+      COALESCE(SUM(out), 0) AS out,
+      COALESCE(SUM(reasoning), 0) AS reasoning,
+      COALESCE(SUM(cache_r), 0) AS cache_r,
+      COALESCE(SUM(cache_w), 0) AS cache_w,
+      COUNT(*) AS events,
+      COUNT(DISTINCT sid) AS sessions
+    FROM clean_events GROUP BY bucket ORDER BY bucket`;
+  const modelsSql = `${base}
+    SELECT bucket, model,
+      COALESCE(SUM(CASE WHEN total > 0 THEN total ELSE inp + out + reasoning + cache_r + cache_w END), 0) AS total,
+      COALESCE(SUM(inp), 0) AS inp,
+      COALESCE(SUM(out), 0) AS out,
+      COALESCE(SUM(reasoning), 0) AS reasoning,
+      COALESCE(SUM(cache_r), 0) AS cache_r,
+      COALESCE(SUM(cache_w), 0) AS cache_w,
+      COUNT(*) AS events,
+      COUNT(DISTINCT sid) AS sessions
+    FROM clean_events GROUP BY bucket, model ORDER BY bucket, total DESC`;
+
+  function run<T>(sql: string): T[] {
+    const out = execFileSync("sqlite3", [
+      "-readonly",
+      "--json",
+      TOKENS_DB_PATH,
+      "-cmd",
+      ".parameter init",
+      "-cmd",
+      `.parameter set ?1 ${Math.trunc(markerTs)}`,
+      sql,
+    ], { encoding: "utf8", timeout: 5000 });
+    return JSON.parse(out || "[]") as T[];
+  }
+
+  try {
+    return { totals: run<DcpMetricRow>(totalsSql), models: run<DcpModelRow>(modelsSql) };
+  } catch {
+    return { totals: [], models: [] };
+  }
+}
+
+function emptyDcpMetric(bucket: "before" | "after"): DcpMetricRow {
+  return { bucket, total: 0, inp: 0, out: 0, reasoning: 0, cache_r: 0, cache_w: 0, events: 0, sessions: 0 };
+}
+
+function deltaText(after: number, before: number): string {
+  const diff = after - before;
+  if (diff === 0) return "0";
+  const pct = before > 0 ? `, ${diff > 0 ? "+" : ""}${Math.round((diff / before) * 100)}%` : "";
+  return `${diff > 0 ? "+" : ""}${fmtTokens(diff)}${pct}`;
+}
+
+function fmtDcpPeriod(row: DcpMetricRow): string {
+  return `${fmtTokens(row.total)} tokens em ${row.sessions} sessões (${row.events} eventos)`;
+}
+
+function dcpDeltaPercent(after: number, before: number): number | null {
+  if (before <= 0) return null;
+  return Math.round(((after - before) / before) * 100);
+}
+
+function describeDcpDelta(before: DcpMetricRow, after: DcpMetricRow): string {
+  if (before.events === 0 || after.events === 0) {
+    return "Ainda não há dados limpos dos dois lados do marcador; leia este relatório como parcial.";
+  }
+  const pct = dcpDeltaPercent(after.total, before.total);
+  if (pct === null) return "O período pós-DCP já tem consumo, mas falta baseline anterior para medir a variação.";
+  if (Math.abs(pct) < 10) return `Consumo praticamente estável: variação de ${pct}% no total de tokens.`;
+  if (pct > 0) return `Consumo aumentou ${pct}% após o DCP; isso sugere sessões mais pesadas ou maior volume de uso.`;
+  return `Consumo caiu ${Math.abs(pct)}% após o DCP; isso sugere menor volume ou sessões mais leves.`;
+}
+
+function formatDcpTokenMix(row: DcpMetricRow): string {
+  return `entrada ${fmtTokens(row.inp)}, saída ${fmtTokens(row.out)}, reasoning ${fmtTokens(row.reasoning)}, cache ${fmtTokens(row.cache_r + row.cache_w)}`;
+}
+
+function formatDcpModelBreakdown(models: DcpModelRow[]): string[] {
+  const byModel = new Map<string, { before: number; after: number }>();
+  for (const row of models) {
+    const entry = byModel.get(row.model) ?? { before: 0, after: 0 };
+    entry[row.bucket] += row.total;
+    byModel.set(row.model, entry);
+  }
+  return Array.from(byModel.entries())
+    .sort((a, b) => Math.max(b[1].before, b[1].after) - Math.max(a[1].before, a[1].after))
+    .slice(0, 5)
+    .map(([model, usage]) => `- ${model}: antes ${fmtTokens(usage.before)} → depois ${fmtTokens(usage.after)} (${deltaText(usage.after, usage.before)})`);
+}
+
+function buildCompareDcpMessage(): string {
+  const markerTs = readDcpMarker();
+  if (markerTs === null) return `DCP: marcador dcp_v1 ausente ou inválido em ${USAGE_CHANGE_MARKERS_PATH}`;
+
+  const { totals, models } = queryDcpTokens(markerTs);
+  const before = totals.find((r) => r.bucket === "before") ?? emptyDcpMetric("before");
+  const after = totals.find((r) => r.bucket === "after") ?? emptyDcpMetric("after");
+  const lines = [`📊 DCP compare — marcador dcp_v1 em ${new Date(markerTs).toISOString()}`];
+  lines.push("");
+  lines.push("Resumo executivo");
+  lines.push(`- Antes do DCP: ${fmtDcpPeriod(before)}.`);
+  lines.push(`- Depois do DCP: ${fmtDcpPeriod(after)}.`);
+  lines.push(`- Delta principal: ${deltaText(after.total, before.total)} tokens; sessões ${after.sessions - before.sessions >= 0 ? "+" : ""}${after.sessions - before.sessions}.`);
+  if (before.events === 0 || after.events === 0) lines.push(`- ⚠️ ${before.events === 0 ? "Antes" : "Depois"} ainda sem dados limpos para comparar.`);
+
+  lines.push("");
+  lines.push("Leitura rápida");
+  lines.push(`- ${describeDcpDelta(before, after)}`);
+  lines.push(`- Mix pós-DCP: ${formatDcpTokenMix(after)}.`);
+
+  if (models.length > 0) {
+    lines.push("");
+    lines.push("Modelos principais");
+    lines.push(...formatDcpModelBreakdown(models));
+  }
+  return lines.join("\n");
+}
+
 const server: Plugin = async ({ client }) => {
   return {
     config: async (input) => {
@@ -615,8 +793,9 @@ const server: Plugin = async ({ client }) => {
       const sessionID = (input as { sessionID?: string }).sessionID;
       if (!sessionID) handled();
       const args = (input as { arguments?: string }).arguments ?? "";
+      const dcpMode = cmd === "compare" && args.split(/\s+/).includes("--dcp");
       const days = cmd === "compare" ? parseInt(args.replace(/^-+/, ""), 10) || 7 : 1;
-      const message = cmd === "compare" ? buildCompareMessage(days) : snapshotCodexUsage();
+      const message = dcpMode ? buildCompareDcpMessage() : cmd === "compare" ? buildCompareMessage(days) : snapshotCodexUsage();
       await injectRawOutput(client, sessionID, message);
       handled();
     },
